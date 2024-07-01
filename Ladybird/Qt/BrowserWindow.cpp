@@ -8,6 +8,7 @@
  */
 
 #include "BrowserWindow.h"
+#include "Application.h"
 #include "Icon.h"
 #include "Settings.h"
 #include "SettingsDialog.h"
@@ -18,7 +19,7 @@
 #include <Ladybird/Qt/TabBar.h>
 #include <Ladybird/Utilities.h>
 #include <LibWeb/CSS/PreferredColorScheme.h>
-#include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Loader/UserAgent.h>
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/UserAgent.h>
 #include <QAction>
@@ -45,7 +46,29 @@ static QIcon const& app_icon()
     return icon;
 }
 
-BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::CookieJar& cookie_jar, WebContentOptions const& web_content_options, StringView webdriver_content_ipc_path)
+class HamburgerMenu : public QMenu {
+public:
+    using QMenu::QMenu;
+    virtual ~HamburgerMenu() override = default;
+
+    virtual void showEvent(QShowEvent*) override
+    {
+        if (!isVisible())
+            return;
+        auto* browser_window = verify_cast<BrowserWindow>(parentWidget());
+        if (!browser_window)
+            return;
+        auto* current_tab = browser_window->current_tab();
+        if (!current_tab)
+            return;
+        // Ensure the hamburger menu placed within the browser window.
+        auto* hamburger_button = current_tab->hamburger_button();
+        auto button_top_right = hamburger_button->mapToGlobal(hamburger_button->rect().bottomRight());
+        move(button_top_right - QPoint(rect().width(), 0));
+    }
+};
+
+BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::CookieJar& cookie_jar, WebContentOptions const& web_content_options, StringView webdriver_content_ipc_path, Tab* parent_tab, Optional<u64> page_index)
     : m_tabs_container(new TabWidget(this))
     , m_cookie_jar(cookie_jar)
     , m_web_content_options(web_content_options)
@@ -71,35 +94,43 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
         });
     }
 
-    auto* menu = menuBar()->addMenu("&File");
+    m_hamburger_menu = new HamburgerMenu(this);
 
-    auto* about_action = new QAction("&About Ladybird", this);
-    menu->addAction(about_action);
+    if (!Settings::the()->show_menubar())
+        menuBar()->hide();
 
-    menu->addSeparator();
+    QObject::connect(Settings::the(), &Settings::show_menubar_changed, this, [this](bool show_menubar) {
+        menuBar()->setVisible(show_menubar);
+    });
 
-    auto* new_tab_action = new QAction("New &Tab", this);
-    new_tab_action->setIcon(load_icon_from_uri("resource://icons/16x16/new-tab.png"sv));
-    new_tab_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::AddTab));
-    menu->addAction(new_tab_action);
+    auto* file_menu = menuBar()->addMenu("&File");
+
+    m_new_tab_action = new QAction("New &Tab", this);
+    m_new_tab_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::AddTab));
+    m_hamburger_menu->addAction(m_new_tab_action);
+    file_menu->addAction(m_new_tab_action);
+
+    m_new_window_action = new QAction("New &Window", this);
+    m_new_window_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::New));
+    m_hamburger_menu->addAction(m_new_window_action);
+    file_menu->addAction(m_new_window_action);
 
     auto* close_current_tab_action = new QAction("&Close Current Tab", this);
     close_current_tab_action->setIcon(load_icon_from_uri("resource://icons/16x16/close-tab.png"sv));
     close_current_tab_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::Close));
-    menu->addAction(close_current_tab_action);
+    m_hamburger_menu->addAction(close_current_tab_action);
+    file_menu->addAction(close_current_tab_action);
 
     auto* open_file_action = new QAction("&Open File...", this);
     open_file_action->setIcon(load_icon_from_uri("resource://icons/16x16/filetype-folder-open.png"sv));
     open_file_action->setShortcut(QKeySequence(QKeySequence::StandardKey::Open));
-    menu->addAction(open_file_action);
+    m_hamburger_menu->addAction(open_file_action);
+    file_menu->addAction(open_file_action);
 
-    menu->addSeparator();
+    m_hamburger_menu->addSeparator();
 
-    auto* quit_action = new QAction("&Quit", this);
-    quit_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::Quit));
-    menu->addAction(quit_action);
-
-    auto* edit_menu = menuBar()->addMenu("&Edit");
+    auto* edit_menu = m_hamburger_menu->addMenu("&Edit");
+    menuBar()->addMenu(edit_menu);
 
     m_copy_selection_action = new QAction("&Copy", this);
     m_copy_selection_action->setIcon(load_icon_from_uri("resource://icons/16x16/edit-copy.png"sv));
@@ -121,12 +152,22 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
 
     edit_menu->addSeparator();
 
+    m_find_in_page_action = new QAction("&Find in Page...", this);
+    m_find_in_page_action->setIcon(load_icon_from_uri("resource://icons/16x16/find.png"sv));
+    m_find_in_page_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::Find));
+
+    edit_menu->addAction(m_find_in_page_action);
+    QObject::connect(m_find_in_page_action, &QAction::triggered, this, &BrowserWindow::show_find_in_page);
+
+    edit_menu->addSeparator();
+
     auto* settings_action = new QAction("&Settings", this);
     settings_action->setIcon(load_icon_from_uri("resource://icons/16x16/settings.png"sv));
     settings_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::Preferences));
     edit_menu->addAction(settings_action);
 
-    auto* view_menu = menuBar()->addMenu("&View");
+    auto* view_menu = m_hamburger_menu->addMenu("&View");
+    menuBar()->addMenu(view_menu);
 
     auto* open_next_tab_action = new QAction("Open &Next Tab", this);
     open_next_tab_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_PageDown));
@@ -188,7 +229,16 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
 
     auto_color_scheme->setChecked(true);
 
-    auto* inspect_menu = menuBar()->addMenu("&Inspect");
+    auto* show_menubar = new QAction("Show &Menubar", this);
+    show_menubar->setCheckable(true);
+    show_menubar->setChecked(Settings::the()->show_menubar());
+    view_menu->addAction(show_menubar);
+    QObject::connect(show_menubar, &QAction::triggered, this, [](bool checked) {
+        Settings::the()->set_show_menubar(checked);
+    });
+
+    auto* inspect_menu = m_hamburger_menu->addMenu("&Inspect");
+    menuBar()->addMenu(inspect_menu);
 
     m_view_source_action = new QAction("View &Source", this);
     m_view_source_action->setIcon(load_icon_from_uri("resource://icons/16x16/filetype-html.png"sv));
@@ -214,13 +264,15 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
     task_manager_action->setIcon(load_icon_from_uri("resource://icons/16x16/app-system-monitor.png"sv));
     task_manager_action->setShortcuts({ QKeySequence("Ctrl+Shift+M") });
     inspect_menu->addAction(task_manager_action);
-    QObject::connect(task_manager_action, &QAction::triggered, this, [this] {
-        show_task_manager_window();
+    QObject::connect(task_manager_action, &QAction::triggered, this, [] {
+        static_cast<Ladybird::Application*>(QApplication::instance())->show_task_manager_window();
     });
 
-    auto* debug_menu = menuBar()->addMenu("&Debug");
+    auto* debug_menu = m_hamburger_menu->addMenu("&Debug");
+    menuBar()->addMenu(debug_menu);
 
     auto* dump_session_history_tree_action = new QAction("Dump Session History Tree", this);
+    dump_session_history_tree_action->setIcon(load_icon_from_uri("resource://icons/16x16/history.png"sv));
     debug_menu->addAction(dump_session_history_tree_action);
     QObject::connect(dump_session_history_tree_action, &QAction::triggered, this, [this] {
         debug_request("dump-session-history");
@@ -266,14 +318,6 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
     debug_menu->addAction(dump_styles_action);
     QObject::connect(dump_styles_action, &QAction::triggered, this, [this] {
         debug_request("dump-all-resolved-styles");
-    });
-
-    auto* dump_history_action = new QAction("Dump &History", this);
-    dump_history_action->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
-    dump_history_action->setIcon(load_icon_from_uri("resource://icons/16x16/history.png"sv));
-    debug_menu->addAction(dump_history_action);
-    QObject::connect(dump_history_action, &QAction::triggered, this, [this] {
-        debug_request("dump-history");
     });
 
     auto* dump_cookies_action = new QAction("Dump C&ookies", this);
@@ -393,11 +437,30 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
         debug_request("same-origin-policy", state ? "on" : "off");
     });
 
+    auto* help_menu = m_hamburger_menu->addMenu("&Help");
+    menuBar()->addMenu(help_menu);
+
+    auto* about_action = new QAction("&About Ladybird", this);
+    help_menu->addAction(about_action);
     QObject::connect(about_action, &QAction::triggered, this, [this] {
         new_tab_from_url("about:version"sv, Web::HTML::ActivateTab::Yes);
     });
-    QObject::connect(new_tab_action, &QAction::triggered, this, [this] {
+
+    m_hamburger_menu->addSeparator();
+    file_menu->addSeparator();
+
+    auto* quit_action = new QAction("&Quit", this);
+    quit_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::Quit));
+    m_hamburger_menu->addAction(quit_action);
+    file_menu->addAction(quit_action);
+    QObject::connect(quit_action, &QAction::triggered, this, &QMainWindow::close);
+
+    QObject::connect(m_new_tab_action, &QAction::triggered, this, [this] {
         new_tab_from_url(ak_url_from_qstring(Settings::the()->new_tab_page()), Web::HTML::ActivateTab::Yes);
+    });
+    QObject::connect(m_new_window_action, &QAction::triggered, this, [this] {
+        auto initial_urls = Vector<URL::URL> { ak_url_from_qstring(Settings::the()->new_tab_page()) };
+        (void)static_cast<Ladybird::Application*>(QApplication::instance())->new_window(initial_urls, m_cookie_jar, m_web_content_options, m_webdriver_content_ipc_path);
     });
     QObject::connect(open_file_action, &QAction::triggered, this, &BrowserWindow::open_file);
     QObject::connect(settings_action, &QAction::triggered, this, [this] {
@@ -408,10 +471,12 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
         m_settings_dialog->show();
         m_settings_dialog->setFocus();
     });
-    QObject::connect(quit_action, &QAction::triggered, this, &QMainWindow::close);
     QObject::connect(m_tabs_container, &QTabWidget::currentChanged, [this](int index) {
-        setWindowTitle(QString("%1 - Ladybird").arg(m_tabs_container->tabText(index)));
-        set_current_tab(verify_cast<Tab>(m_tabs_container->widget(index)));
+        auto* tab = verify_cast<Tab>(m_tabs_container->widget(index));
+        if (tab)
+            setWindowTitle(QString("%1 - Ladybird").arg(tab->title()));
+
+        set_current_tab(tab);
     });
     QObject::connect(m_tabs_container, &QTabWidget::tabCloseRequested, this, &BrowserWindow::close_tab);
     QObject::connect(close_current_tab_action, &QAction::triggered, this, &BrowserWindow::close_current_tab);
@@ -442,7 +507,7 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
     m_reload_action->setShortcuts(QKeySequence::keyBindings(QKeySequence::StandardKey::Refresh));
     m_go_back_action->setEnabled(false);
     m_go_forward_action->setEnabled(false);
-    m_reload_action->setEnabled(false);
+    m_reload_action->setEnabled(true);
 
     for (int i = 0; i <= 7; ++i) {
         new QShortcut(QKeySequence(Qt::CTRL | static_cast<Qt::Key>(Qt::Key_1 + i)), this, [this, i] {
@@ -460,8 +525,12 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
         m_tabs_container->setCurrentIndex(m_tabs_container->count() - 1);
     });
 
-    for (size_t i = 0; i < initial_urls.size(); ++i) {
-        new_tab_from_url(initial_urls[i], (i == 0) ? Web::HTML::ActivateTab::Yes : Web::HTML::ActivateTab::No);
+    if (parent_tab) {
+        new_child_tab(Web::HTML::ActivateTab::Yes, *parent_tab, AK::move(page_index));
+    } else {
+        for (size_t i = 0; i < initial_urls.size(); ++i) {
+            new_tab_from_url(initial_urls[i], (i == 0) ? Web::HTML::ActivateTab::Yes : Web::HTML::ActivateTab::No);
+        }
     }
 
     setCentralWidget(m_tabs_container);
@@ -471,8 +540,10 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, WebView::Cook
 void BrowserWindow::set_current_tab(Tab* tab)
 {
     m_current_tab = tab;
-    if (tab)
+    if (tab) {
         update_displayed_zoom_level();
+        tab->update_navigation_buttons_state();
+    }
 }
 
 void BrowserWindow::debug_request(ByteString const& request, ByteString const& argument)
@@ -496,23 +567,22 @@ Tab& BrowserWindow::new_tab_from_content(StringView html, Web::HTML::ActivateTab
     return tab;
 }
 
-Tab& BrowserWindow::new_child_tab(Web::HTML::ActivateTab activate_tab, Tab& parent, Web::HTML::WebViewHints hints, Optional<u64> page_index)
+Tab& BrowserWindow::new_child_tab(Web::HTML::ActivateTab activate_tab, Tab& parent, Optional<u64> page_index)
 {
-    return create_new_tab(activate_tab, parent, hints, page_index);
+    return create_new_tab(activate_tab, parent, page_index);
 }
 
-Tab& BrowserWindow::create_new_tab(Web::HTML::ActivateTab activate_tab, Tab& parent, Web::HTML::WebViewHints, Optional<u64> page_index)
+Tab& BrowserWindow::create_new_tab(Web::HTML::ActivateTab activate_tab, Tab& parent, Optional<u64> page_index)
 {
     if (!page_index.has_value())
         return create_new_tab(activate_tab);
 
-    // FIXME: Respect hints for:
-    //   popup: Create new window
-    //   width, height: size of window
-    //   screen_x, screen_y: positioning of window on the screen
     auto* tab = new Tab(this, m_web_content_options, m_webdriver_content_ipc_path, parent.view().client(), page_index.value());
 
-    VERIFY(m_current_tab != nullptr);
+    // FIXME: Merge with other overload
+    if (m_current_tab == nullptr) {
+        set_current_tab(tab);
+    }
 
     m_tabs_container->addTab(tab, "New Tab");
     if (activate_tab == Web::HTML::ActivateTab::Yes)
@@ -542,6 +612,7 @@ void BrowserWindow::initialize_tab(Tab* tab)
     QObject::connect(tab, &Tab::title_changed, this, &BrowserWindow::tab_title_changed);
     QObject::connect(tab, &Tab::favicon_changed, this, &BrowserWindow::tab_favicon_changed);
     QObject::connect(tab, &Tab::audio_play_state_changed, this, &BrowserWindow::tab_audio_play_state_changed);
+    QObject::connect(tab, &Tab::navigation_buttons_state_changed, this, &BrowserWindow::tab_navigation_buttons_state_changed);
 
     QObject::connect(&tab->view(), &WebContentView::urls_dropped, this, [this](auto& urls) {
         VERIFY(urls.size());
@@ -552,7 +623,12 @@ void BrowserWindow::initialize_tab(Tab* tab)
     });
 
     tab->view().on_new_web_view = [this, tab](auto activate_tab, Web::HTML::WebViewHints hints, Optional<u64> page_index) {
-        auto& new_tab = new_child_tab(activate_tab, *tab, hints, page_index);
+        if (hints.popup) {
+            auto& window = static_cast<Ladybird::Application*>(QApplication::instance())->new_window({}, m_cookie_jar, m_web_content_options, m_webdriver_content_ipc_path, tab, AK::move(page_index));
+            window.set_window_rect(hints.screen_x, hints.screen_y, hints.width, hints.height);
+            return window.current_tab()->view().handle();
+        }
+        auto& new_tab = new_child_tab(activate_tab, *tab, page_index);
         return new_tab.view().handle();
     };
 
@@ -613,6 +689,14 @@ void BrowserWindow::close_tab(int index)
     auto* tab = m_tabs_container->widget(index);
     m_tabs_container->removeTab(index);
     tab->deleteLater();
+
+    if (m_tabs_container->count() == 0)
+        close();
+}
+
+void BrowserWindow::move_tab(int old_index, int new_index)
+{
+    m_tabs_container->tabBar()->moveTab(old_index, new_index);
 }
 
 void BrowserWindow::open_file()
@@ -623,9 +707,6 @@ void BrowserWindow::open_file()
 void BrowserWindow::close_current_tab()
 {
     close_tab(m_tabs_container->currentIndex());
-
-    if (m_tabs_container->count() == 0)
-        close();
 }
 
 int BrowserWindow::tab_index(Tab* tab)
@@ -706,6 +787,12 @@ void BrowserWindow::tab_audio_play_state_changed(int index, Web::HTML::AudioPlay
         m_tabs_container->tabBar()->setTabButton(index, position, button);
         break;
     }
+}
+
+void BrowserWindow::tab_navigation_buttons_state_changed(int index)
+{
+    auto* tab = verify_cast<Tab>(m_tabs_container->widget(index));
+    tab->update_navigation_buttons_state();
 }
 
 QIcon BrowserWindow::icon_for_page_mute_state(Tab& tab) const
@@ -824,6 +911,14 @@ void BrowserWindow::select_all()
     m_current_tab->view().select_all();
 }
 
+void BrowserWindow::show_find_in_page()
+{
+    if (!m_current_tab)
+        return;
+
+    m_current_tab->show_find_in_page();
+}
+
 void BrowserWindow::paste()
 {
     if (!m_current_tab)
@@ -838,6 +933,18 @@ void BrowserWindow::update_displayed_zoom_level()
     VERIFY(m_current_tab);
     update_zoom_menu();
     m_current_tab->update_reset_zoom_button();
+}
+
+void BrowserWindow::set_window_rect(Optional<Web::DevicePixels> x, Optional<Web::DevicePixels> y, Optional<Web::DevicePixels> width, Optional<Web::DevicePixels> height)
+{
+    x = x.value_or(0);
+    y = y.value_or(0);
+    if (!width.has_value() || width.value() == 0)
+        width = 800;
+    if (!height.has_value() || height.value() == 0)
+        height = 600;
+
+    setGeometry(x.value().value(), y.value().value(), width.value().value(), height.value().value());
 }
 
 void BrowserWindow::copy_selected_text()
@@ -859,6 +966,9 @@ bool BrowserWindow::event(QEvent* event)
             device_pixel_ratio_changed(devicePixelRatio());
     }
 #endif
+
+    if (event->type() == QEvent::WindowActivate)
+        static_cast<Ladybird::Application*>(QApplication::instance())->set_active_window(*this);
 
     return QMainWindow::event(event);
 }
@@ -898,8 +1008,10 @@ bool BrowserWindow::eventFilter(QObject* obj, QEvent* event)
         if (mouse_event->button() == Qt::MouseButton::MiddleButton) {
             if (obj == m_tabs_container) {
                 auto const tab_index = m_tabs_container->tabBar()->tabAt(mouse_event->pos());
-                close_tab(tab_index);
-                return true;
+                if (tab_index != -1) {
+                    close_tab(tab_index);
+                    return true;
+                }
             }
         }
     }
@@ -913,23 +1025,9 @@ void BrowserWindow::closeEvent(QCloseEvent* event)
     Settings::the()->set_last_size(size());
     Settings::the()->set_is_maximized(isMaximized());
 
+    QObject::deleteLater();
+
     QMainWindow::closeEvent(event);
-}
-
-void BrowserWindow::show_task_manager_window()
-{
-    if (!m_task_manager_window) {
-        m_task_manager_window = new TaskManagerWindow(this);
-    }
-    m_task_manager_window->show();
-    m_task_manager_window->activateWindow();
-    m_task_manager_window->raise();
-}
-
-void BrowserWindow::close_task_manager_window()
-{
-    if (m_task_manager_window)
-        m_task_manager_window->close();
 }
 
 }

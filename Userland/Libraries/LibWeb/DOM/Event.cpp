@@ -7,10 +7,12 @@
  */
 
 #include <AK/TypeCasts.h>
+#include <LibWeb/Bindings/EventPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/Node.h>
 #include <LibWeb/DOM/ShadowRoot.h>
+#include <LibWeb/HighResolutionTime/TimeOrigin.h>
 
 namespace Web::DOM {
 
@@ -26,13 +28,16 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Event>> Event::construct_impl(JS::Realm& re
     return create(realm, event_name, event_init);
 }
 
+// https://dom.spec.whatwg.org/#inner-event-creation-steps
 Event::Event(JS::Realm& realm, FlyString const& type)
     : PlatformObject(realm)
     , m_type(type)
     , m_initialized(true)
+    , m_time_stamp(HighResolutionTime::current_high_resolution_time(HTML::relevant_global_object(*this)))
 {
 }
 
+// https://dom.spec.whatwg.org/#inner-event-creation-steps
 Event::Event(JS::Realm& realm, FlyString const& type, EventInit const& event_init)
     : PlatformObject(realm)
     , m_type(type)
@@ -40,6 +45,7 @@ Event::Event(JS::Realm& realm, FlyString const& type, EventInit const& event_ini
     , m_cancelable(event_init.cancelable)
     , m_composed(event_init.composed)
     , m_initialized(true)
+    , m_time_stamp(HighResolutionTime::current_high_resolution_time(HTML::relevant_global_object(*this)))
 {
 }
 
@@ -59,11 +65,9 @@ void Event::visit_edges(Visitor& visitor)
         visitor.visit(it.invocation_target);
         visitor.visit(it.shadow_adjusted_target);
         visitor.visit(it.related_target);
-        for (auto& itit : it.touch_target_list)
-            visitor.visit(itit);
+        visitor.visit(it.touch_target_list);
     }
-    for (auto& it : m_touch_target_list)
-        visitor.visit(it);
+    visitor.visit(m_touch_target_list);
 }
 
 // https://dom.spec.whatwg.org/#concept-event-path-append

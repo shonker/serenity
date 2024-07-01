@@ -81,10 +81,16 @@ ErrorOr<void> initialize_main_thread_vm()
     VERIFY(!s_main_thread_vm);
 
     s_main_thread_vm = TRY(JS::VM::create(make<WebEngineCustomData>()));
+    s_main_thread_vm->on_unimplemented_property_access = [](auto const& object, auto const& property_key) {
+        dbgln("FIXME: Unimplemented IDL interface: '{}.{}'", object.class_name(), property_key.to_string());
+    };
 
     // NOTE: We intentionally leak the main thread JavaScript VM.
     //       This avoids doing an exhaustive garbage collection on process exit.
     s_main_thread_vm->ref();
+
+    auto& custom_data = verify_cast<WebEngineCustomData>(*s_main_thread_vm->custom_data());
+    custom_data.event_loop = s_main_thread_vm->heap().allocate_without_realm<HTML::EventLoop>();
 
     // These strings could potentially live on the VM similar to CommonPropertyNames.
     DOM::MutationType::initialize_strings();
@@ -102,8 +108,6 @@ ErrorOr<void> initialize_main_thread_vm()
     WebGL::EventNames::initialize_strings();
     XHR::EventNames::initialize_strings();
     XLink::AttributeNames::initialize_strings();
-
-    static_cast<WebEngineCustomData*>(s_main_thread_vm->custom_data())->event_loop.set_vm(*s_main_thread_vm);
 
     // 8.1.5.1 HostEnsureCanAddPrivateElement(O), https://html.spec.whatwg.org/multipage/webappapis.html#the-hostensurecanaddprivateelement-implementation
     s_main_thread_vm->host_ensure_can_add_private_element = [](JS::Object const& object) -> JS::ThrowCompletionOr<void> {
@@ -170,7 +174,7 @@ ErrorOr<void> initialize_main_thread_vm()
 
             // 5. Queue a global task on the DOM manipulation task source given global to fire an event named rejectionhandled at global, using PromiseRejectionEvent,
             //    with the promise attribute initialized to promise, and the reason attribute initialized to the value of promise's [[PromiseResult]] internal slot.
-            HTML::queue_global_task(HTML::Task::Source::DOMManipulation, global, [&global, &promise] {
+            HTML::queue_global_task(HTML::Task::Source::DOMManipulation, global, JS::create_heap_function(s_main_thread_vm->heap(), [&global, &promise] {
                 // FIXME: This currently assumes that global is a WindowObject.
                 auto& window = verify_cast<HTML::Window>(global);
 
@@ -181,7 +185,7 @@ ErrorOr<void> initialize_main_thread_vm()
                 };
                 auto promise_rejection_event = HTML::PromiseRejectionEvent::create(HTML::relevant_realm(global), HTML::EventNames::rejectionhandled, event_init);
                 window.dispatch_event(promise_rejection_event);
-            });
+            }));
             break;
         }
         default:
@@ -225,7 +229,7 @@ ErrorOr<void> initialize_main_thread_vm()
         auto& global = finalization_registry.realm().global_object();
 
         // 2. Queue a global task on the JavaScript engine task source given global to perform the following steps:
-        HTML::queue_global_task(HTML::Task::Source::JavaScriptEngine, global, [&finalization_registry] {
+        HTML::queue_global_task(HTML::Task::Source::JavaScriptEngine, global, JS::create_heap_function(s_main_thread_vm->heap(), [&finalization_registry] {
             // 1. Let entry be finalizationRegistry.[[CleanupCallback]].[[Callback]].[[Realm]]'s environment settings object.
             auto& entry = host_defined_environment_settings_object(*finalization_registry.cleanup_callback().callback().realm());
 
@@ -245,7 +249,7 @@ ErrorOr<void> initialize_main_thread_vm()
             // 6. If result is an abrupt completion, then report the exception given by result.[[Value]].
             if (result.is_error())
                 HTML::report_exception(result, finalization_registry.realm());
-        });
+        }));
     };
 
     // 8.1.5.4.3 HostEnqueuePromiseJob(job, realm), https://html.spec.whatwg.org/multipage/webappapis.html#hostenqueuepromisejob
@@ -265,8 +269,9 @@ ErrorOr<void> initialize_main_thread_vm()
         // Do note that "implied document" from the spec is handwavy and the spec authors are trying to get rid of it: https://github.com/whatwg/html/issues/4980
         auto* script = active_script();
 
+        auto& heap = realm ? realm->heap() : s_main_thread_vm->heap();
         // NOTE: This keeps job_settings alive by keeping realm alive, which is holding onto job_settings.
-        HTML::queue_a_microtask(script ? script->settings_object().responsible_document().ptr() : nullptr, [job_settings, job = move(job), script_or_module = move(script_or_module)] {
+        HTML::queue_a_microtask(script ? script->settings_object().responsible_document().ptr() : nullptr, JS::create_heap_function(heap, [job_settings, job = move(job), script_or_module = move(script_or_module)] {
             // The dummy execution context has to be kept up here to keep it alive for the duration of the function.
             OwnPtr<JS::ExecutionContext> dummy_execution_context;
 
@@ -290,7 +295,7 @@ ErrorOr<void> initialize_main_thread_vm()
                 // FIXME: We need to setup a dummy execution context in case a JS::NativeFunction is called when processing the job.
                 //        This is because JS::NativeFunction::call excepts something to be on the execution context stack to be able to get the caller context to initialize the environment.
                 //        Do note that the JS spec gives _no_ guarantee that the execution context stack has something on it if HostEnqueuePromiseJob was called with a null realm: https://tc39.es/ecma262/#job-preparedtoevaluatecode
-                dummy_execution_context = JS::ExecutionContext::create(s_main_thread_vm->heap());
+                dummy_execution_context = JS::ExecutionContext::create();
                 dummy_execution_context->script_or_module = script_or_module;
                 s_main_thread_vm->push_execution_context(*dummy_execution_context);
             }
@@ -315,7 +320,7 @@ ErrorOr<void> initialize_main_thread_vm()
             // 5. If result is an abrupt completion, then report the exception given by result.[[Value]].
             if (result.is_error())
                 HTML::report_exception(result, job_settings->realm());
-        });
+        }));
     };
 
     // 8.1.5.4.4 HostMakeJobCallback(callable), https://html.spec.whatwg.org/multipage/webappapis.html#hostmakejobcallback
@@ -332,7 +337,7 @@ ErrorOr<void> initialize_main_thread_vm()
         // 4. If active script is not null, set script execution context to a new JavaScript execution context, with its Function field set to null,
         //    its Realm field set to active script's settings object's Realm, and its ScriptOrModule set to active script's record.
         if (script) {
-            script_execution_context = JS::ExecutionContext::create(s_main_thread_vm->heap());
+            script_execution_context = JS::ExecutionContext::create();
             script_execution_context->function = nullptr;
             script_execution_context->realm = &script->settings_object().realm();
             if (is<HTML::ClassicScript>(script)) {
@@ -521,7 +526,7 @@ ErrorOr<void> initialize_main_thread_vm()
             // 5. Perform FinishLoadingImportedModule(referrer, moduleRequest, payload, completion).
             // NON-STANDARD: To ensure that LibJS can find the module on the stack, we push a new execution context.
 
-            auto module_execution_context = JS::ExecutionContext::create(realm.heap());
+            auto module_execution_context = JS::ExecutionContext::create();
             module_execution_context->realm = realm;
             if (module)
                 module_execution_context->script_or_module = JS::NonnullGCPtr { *module };
@@ -563,7 +568,7 @@ void queue_mutation_observer_microtask(DOM::Document const& document)
     // 3. Queue a microtask to notify mutation observers.
     // NOTE: This uses the implied document concept. In the case of mutation observers, it is always done in a node context, so document should be that node's document.
     // FIXME: Is it safe to pass custom_data through?
-    HTML::queue_a_microtask(&document, [&custom_data, &heap = document.heap()]() {
+    HTML::queue_a_microtask(&document, JS::create_heap_function(vm.heap(), [&custom_data, &heap = document.heap()]() {
         // 1. Set the surrounding agent’s mutation observer microtask queued to false.
         custom_data.mutation_observer_microtask_queued = false;
 
@@ -614,7 +619,7 @@ void queue_mutation_observer_microtask(DOM::Document const& document)
         }
 
         // FIXME: 6. For each slot of signalSet, fire an event named slotchange, with its bubbles attribute set to true, at slot.
-    });
+    }));
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#creating-a-new-javascript-realm

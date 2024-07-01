@@ -12,6 +12,7 @@
 #include <LibJS/Runtime/Realm.h>
 #include <LibJS/Runtime/TypedArray.h>
 #include <LibTextCodec/Decoder.h>
+#include <LibWeb/Bindings/FileReaderPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/EventTarget.h>
@@ -129,7 +130,7 @@ WebIDL::ExceptionOr<void> FileReader::read_operation(Blob& blob, Type type, Opti
     m_error = {};
 
     // 5. Let stream be the result of calling get stream on blob.
-    auto stream = TRY(blob.get_stream());
+    auto stream = blob.get_stream();
 
     // 6. Let reader be the result of getting a reader from stream.
     auto reader = TRY(acquire_readable_stream_default_reader(*stream));
@@ -138,7 +139,7 @@ WebIDL::ExceptionOr<void> FileReader::read_operation(Blob& blob, Type type, Opti
     ByteBuffer bytes;
 
     // 8. Let chunkPromise be the result of reading a chunk from stream with reader.
-    auto chunk_promise = TRY(reader->read());
+    auto chunk_promise = reader->read();
 
     // 9. Let isFirstChunk be true.
     bool is_first_chunk = true;
@@ -157,9 +158,9 @@ WebIDL::ExceptionOr<void> FileReader::read_operation(Blob& blob, Type type, Opti
             // 2. If chunkPromise is fulfilled, and isFirstChunk is true, queue a task to fire a progress event called loadstart at fr.
             // NOTE: ISSUE 2 We might change loadstart to be dispatched synchronously, to align with XMLHttpRequest behavior. [Issue #119]
             if (chunk_promise->state() == JS::Promise::State::Fulfilled && is_first_chunk) {
-                HTML::queue_global_task(HTML::Task::Source::FileReading, realm.global_object(), [this, &realm]() {
+                HTML::queue_global_task(HTML::Task::Source::FileReading, realm.global_object(), JS::create_heap_function(heap(), [this, &realm]() {
                     dispatch_event(DOM::Event::create(realm, HTML::EventNames::loadstart));
-                });
+                }));
             }
 
             // 3. Set isFirstChunk to false.
@@ -182,11 +183,11 @@ WebIDL::ExceptionOr<void> FileReader::read_operation(Blob& blob, Type type, Opti
                 // FIXME: 3. If roughly 50ms have passed since these steps were last invoked, queue a task to fire a progress event called progress at fr.
 
                 // 4. Set chunkPromise to the result of reading a chunk from stream with reader.
-                chunk_promise = MUST(reader->read());
+                chunk_promise = reader->read();
             }
             // 5. Otherwise, if chunkPromise is fulfilled with an object whose done property is true, queue a task to run the following steps and abort this algorithm:
             else if (chunk_promise->state() == JS::Promise::State::Fulfilled && done.as_bool()) {
-                HTML::queue_global_task(HTML::Task::Source::FileReading, realm.global_object(), [this, bytes, type, &realm, encoding_name, blobs_type]() {
+                HTML::queue_global_task(HTML::Task::Source::FileReading, realm.global_object(), JS::create_heap_function(heap(), [this, bytes, type, &realm, encoding_name, blobs_type]() {
                     // 1. Set fr’s state to "done".
                     m_state = State::Done;
 
@@ -214,13 +215,13 @@ WebIDL::ExceptionOr<void> FileReader::read_operation(Blob& blob, Type type, Opti
                         dispatch_event(DOM::Event::create(realm, HTML::EventNames::loadend));
 
                     // NOTE: Event handler for the load or error events could have started another load, if that happens the loadend event for this load is not fired.
-                });
+                }));
 
                 return;
             }
             // 6. Otherwise, if chunkPromise is rejected with an error error, queue a task to run the following steps and abort this algorithm:
             else if (chunk_promise->state() == JS::Promise::State::Rejected) {
-                HTML::queue_global_task(HTML::Task::Source::FileReading, realm.global_object(), [this, &realm]() {
+                HTML::queue_global_task(HTML::Task::Source::FileReading, realm.global_object(), JS::create_heap_function(heap(), [this, &realm]() {
                     // 1. Set fr’s state to "done".
                     m_state = State::Done;
 
@@ -234,7 +235,7 @@ WebIDL::ExceptionOr<void> FileReader::read_operation(Blob& blob, Type type, Opti
                         dispatch_event(DOM::Event::create(realm, HTML::EventNames::loadend));
 
                     // 5. Note: Event handler for the error event could have started another load, if that happens the loadend event for this load is not fired.
-                });
+                }));
             }
         }
     });

@@ -19,8 +19,9 @@ class StyleSheetList final : public Bindings::PlatformObject {
 public:
     [[nodiscard]] static JS::NonnullGCPtr<StyleSheetList> create(DOM::Document&);
 
-    void add_sheet(CSSStyleSheet&);
-    void remove_sheet(CSSStyleSheet&);
+    void add_a_css_style_sheet(CSS::CSSStyleSheet&);
+    void remove_a_css_style_sheet(CSS::CSSStyleSheet&);
+    void create_a_css_style_sheet(String type, DOM::Element* owner_node, String media, String title, bool alternate, bool origin_clean, Optional<String> location, CSS::CSSStyleSheet* parent_style_sheet, CSS::CSSRule* owner_rule, CSS::CSSStyleSheet&);
 
     Vector<JS::NonnullGCPtr<CSSStyleSheet>> const& sheets() const { return m_sheets; }
     Vector<JS::NonnullGCPtr<CSSStyleSheet>>& sheets() { return m_sheets; }
@@ -46,10 +47,16 @@ private:
     virtual void initialize(JS::Realm&) override;
     virtual void visit_edges(Cell::Visitor&) override;
 
-    void sort_sheets();
+    void add_sheet(CSSStyleSheet&);
+    void remove_sheet(CSSStyleSheet&);
 
     JS::NonnullGCPtr<DOM::Document> m_document;
     Vector<JS::NonnullGCPtr<CSSStyleSheet>> m_sheets;
+
+    // https://www.w3.org/TR/cssom/#preferred-css-style-sheet-set-name
+    String m_preferred_css_style_sheet_set_name;
+    // https://www.w3.org/TR/cssom/#last-css-style-sheet-set-name
+    Optional<String> m_last_css_style_sheet_set_name;
 };
 
 }

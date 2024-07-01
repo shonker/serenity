@@ -22,8 +22,8 @@
 #include <LibGfx/Size.h>
 #include <LibGfx/StandardCursor.h>
 #include <LibIPC/Forward.h>
-#include <LibJS/Heap/Cell.h>
 #include <LibJS/Heap/Handle.h>
+#include <LibJS/Heap/Heap.h>
 #include <LibURL/URL.h>
 #include <LibWeb/CSS/PreferredColorScheme.h>
 #include <LibWeb/CSS/Selector.h>
@@ -33,13 +33,11 @@
 #include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/ColorPickerUpdateState.h>
 #include <LibWeb/HTML/FileFilter.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/HTML/SelectItem.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
 #include <LibWeb/HTML/WebViewHints.h>
 #include <LibWeb/Loader/FileRequest.h>
 #include <LibWeb/PixelUnits.h>
-#include <LibWebView/SocketPair.h>
 
 namespace Web {
 
@@ -47,6 +45,7 @@ class PageClient;
 
 class Page final : public JS::Cell {
     JS_CELL(Page, JS::Cell);
+    JS_DECLARE_ALLOCATOR(Page);
 
 public:
     static JS::NonnullGCPtr<Page> create(JS::VM&, JS::NonnullGCPtr<PageClient>);
@@ -66,14 +65,18 @@ public:
 
     JS::NonnullGCPtr<HTML::TraversableNavigable> top_level_traversable() const;
 
-    HTML::BrowsingContext& focused_context();
-    HTML::BrowsingContext const& focused_context() const { return const_cast<Page*>(this)->focused_context(); }
+    HTML::Navigable& focused_navigable();
+    HTML::Navigable const& focused_navigable() const { return const_cast<Page*>(this)->focused_navigable(); }
 
-    void set_focused_browsing_context(Badge<EventHandler>, HTML::BrowsingContext&);
+    void set_focused_navigable(Badge<EventHandler>, HTML::Navigable&);
 
     void load(URL::URL const&);
 
     void load_html(StringView);
+
+    void reload();
+
+    void traverse_the_history_by_delta(int delta);
 
     CSSPixelPoint device_to_css_point(DevicePixelPoint) const;
     DevicePixelPoint css_to_device_point(CSSPixelPoint) const;
@@ -141,7 +144,7 @@ public:
     void file_picker_closed(Span<HTML::SelectedFile> selected_files);
 
     void did_request_select_dropdown(WeakPtr<HTML::HTMLSelectElement> target, Web::CSSPixelPoint content_position, Web::CSSPixels minimum_width, Vector<Web::HTML::SelectItem> items);
-    void select_dropdown_closed(Optional<String> value);
+    void select_dropdown_closed(Optional<u32> const& selected_item_id);
 
     enum class PendingNonBlockingDialog {
         None,
@@ -175,15 +178,23 @@ public:
 
     bool pdf_viewer_supported() const { return m_pdf_viewer_supported; }
 
+    void clear_selection();
+
+    void find_in_page(String const& query, CaseSensitivity);
+    void find_in_page_next_match();
+    void find_in_page_previous_match();
+
 private:
     explicit Page(JS::NonnullGCPtr<PageClient>);
     virtual void visit_edges(Visitor&) override;
 
     JS::GCPtr<HTML::HTMLMediaElement> media_context_menu_element();
 
+    void update_find_in_page_selection();
+
     JS::NonnullGCPtr<PageClient> m_client;
 
-    WeakPtr<HTML::BrowsingContext> m_focused_context;
+    WeakPtr<HTML::Navigable> m_focused_navigable;
 
     JS::GCPtr<HTML::TraversableNavigable> m_top_level_traversable;
 
@@ -222,6 +233,8 @@ private:
     // Spec Note: This value also impacts the navigation processing model.
     // FIXME: Actually support pdf viewing
     bool m_pdf_viewer_supported { false };
+    size_t m_find_in_page_match_index { 0 };
+    Vector<JS::NonnullGCPtr<DOM::Range>> m_find_in_page_matches;
 };
 
 struct PaintOptions {
@@ -244,8 +257,10 @@ public:
     virtual DevicePixelRect screen_rect() const = 0;
     virtual double device_pixels_per_css_pixel() const = 0;
     virtual CSS::PreferredColorScheme preferred_color_scheme() const = 0;
+    virtual void paint_next_frame() = 0;
     virtual void paint(DevicePixelRect const&, Gfx::Bitmap&, PaintOptions = {}) = 0;
     virtual void page_did_change_title(ByteString const&) { }
+    virtual void page_did_change_url(URL::URL const&) { }
     virtual void page_did_request_navigate_back() { }
     virtual void page_did_request_navigate_forward() { }
     virtual void page_did_request_refresh() { }
@@ -257,9 +272,9 @@ public:
     virtual Gfx::IntRect page_did_request_fullscreen_window() { return {}; }
     virtual void page_did_start_loading(URL::URL const&, bool is_redirect) { (void)is_redirect; }
     virtual void page_did_create_new_document(Web::DOM::Document&) { }
+    virtual void page_did_change_active_document_in_top_level_browsing_context(Web::DOM::Document&) { }
     virtual void page_did_destroy_document(Web::DOM::Document&) { }
     virtual void page_did_finish_loading(URL::URL const&) { }
-    virtual void page_did_update_url(URL::URL const&, Web::HTML::HistoryHandlingBehavior) { }
     virtual void page_did_request_cursor_change(Gfx::StandardCursor) { }
     virtual void page_did_request_context_menu(CSSPixelPoint) { }
     virtual void page_did_request_link_context_menu(CSSPixelPoint, URL::URL const&, [[maybe_unused]] ByteString const& target, [[maybe_unused]] unsigned modifiers) { }
@@ -293,6 +308,7 @@ public:
     virtual NewWebViewResult page_did_request_new_web_view(HTML::ActivateTab, HTML::WebViewHints, HTML::TokenizedFeature::NoOpener) { return {}; }
     virtual void page_did_request_activate_tab() { }
     virtual void page_did_close_top_level_traversable() { }
+    virtual void page_did_update_navigation_buttons_state([[maybe_unused]] bool back_enabled, [[maybe_unused]] bool forward_enabled) { }
 
     virtual void request_file(FileRequest) = 0;
 
@@ -309,7 +325,7 @@ public:
 
     virtual void page_did_change_audio_play_state(HTML::AudioPlayState) { }
 
-    virtual WebView::SocketPair request_worker_agent() { return { -1, -1 }; }
+    virtual IPC::File request_worker_agent() { return IPC::File {}; }
 
     virtual void inspector_did_load() { }
     virtual void inspector_did_select_dom_node([[maybe_unused]] i32 node_id, [[maybe_unused]] Optional<CSS::Selector::PseudoElement::Type> const& pseudo_element) { }

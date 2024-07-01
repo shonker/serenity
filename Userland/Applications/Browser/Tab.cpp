@@ -43,7 +43,6 @@
 #include <LibGUI/Window.h>
 #include <LibURL/URL.h>
 #include <LibWeb/HTML/BrowsingContext.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/HTML/SyntaxHighlighter/SyntaxHighlighter.h>
 #include <LibWeb/Layout/BlockContainer.h>
@@ -134,28 +133,18 @@ Tab::Tab(BrowserWindow& window)
 
     auto& go_back_button = toolbar.add_action(window.go_back_action());
     go_back_button.on_context_menu_request = [&](auto&) {
-        if (!m_history.can_go_back())
+        if (!m_can_navigate_back)
             return;
-        int i = 0;
-        m_go_back_context_menu = GUI::Menu::construct();
-        for (auto& url : m_history.get_back_title_history()) {
-            i++;
-            m_go_back_context_menu->add_action(GUI::Action::create(url.to_byte_string(), g_icon_bag.filetype_html, [this, i](auto&) { go_back(i); }));
-        }
-        m_go_back_context_menu->popup(go_back_button.screen_relative_rect().bottom_left().moved_up(1));
+
+        // FIXME: Reimplement selecting a specific entry using WebContent's history.
     };
 
     auto& go_forward_button = toolbar.add_action(window.go_forward_action());
     go_forward_button.on_context_menu_request = [&](auto&) {
-        if (!m_history.can_go_forward())
+        if (!m_can_navigate_forward)
             return;
-        int i = 0;
-        m_go_forward_context_menu = GUI::Menu::construct();
-        for (auto& url : m_history.get_forward_title_history()) {
-            i++;
-            m_go_forward_context_menu->add_action(GUI::Action::create(url.to_byte_string(), g_icon_bag.filetype_html, [this, i](auto&) { go_forward(i); }));
-        }
-        m_go_forward_context_menu->popup(go_forward_button.screen_relative_rect().bottom_left().moved_up(1));
+
+        // FIXME: Reimplement selecting a specific entry using WebContent's history.
     };
 
     auto& go_home_button = toolbar.add_action(window.go_home_action());
@@ -215,15 +204,9 @@ Tab::Tab(BrowserWindow& window)
     m_bookmark_button->set_icon(g_icon_bag.bookmark_contour);
     m_bookmark_button->set_fixed_size(22, 22);
 
-    view().on_load_start = [this](auto& url, bool is_redirect) {
+    view().on_load_start = [this](auto& url, bool) {
         m_navigating_url = url;
         m_loaded = false;
-
-        // If we are loading due to a redirect, we replace the current history entry
-        // with the loaded URL
-        if (is_redirect) {
-            m_history.replace_current(url, title());
-        }
 
         auto url_serialized = url.serialize();
 
@@ -235,17 +218,10 @@ Tab::Tab(BrowserWindow& window)
         if (on_favicon_change)
             on_favicon_change(*m_icon);
 
-        update_status();
-
         m_location_box->set_icon(nullptr);
         m_location_box->set_text(url_serialized);
 
-        // don't add to history if back or forward is pressed
-        if (!m_is_history_navigation)
-            m_history.push(url, title());
-        m_is_history_navigation = false;
-
-        update_actions();
+        update_status();
         update_bookmark_button(url_serialized);
 
         if (m_dom_inspector_widget)
@@ -262,29 +238,25 @@ Tab::Tab(BrowserWindow& window)
             m_dom_inspector_widget->inspect();
     };
 
-    view().on_url_updated = [this](auto const& url, auto history_behavior) {
-        switch (history_behavior) {
-        case Web::HTML::HistoryHandlingBehavior::Push:
-            m_history.push(url, m_title);
-            break;
-        case Web::HTML::HistoryHandlingBehavior::Replace:
-            m_history.replace_current(url, m_title);
-            break;
-        }
-
+    view().on_url_change = [this](auto const& url) {
         auto url_serialized = url.serialize();
         m_location_box->set_text(url_serialized);
 
-        update_actions();
         update_bookmark_button(url_serialized);
     };
 
+    view().on_navigation_buttons_state_changed = [this](auto back_enabled, auto forward_enabled) {
+        m_can_navigate_back = back_enabled;
+        m_can_navigate_forward = forward_enabled;
+        update_actions();
+    };
+
     view().on_navigate_back = [this]() {
-        go_back(1);
+        go_back();
     };
 
     view().on_navigate_forward = [this]() {
-        go_forward(1);
+        go_forward();
     };
 
     view().on_refresh = [this]() {
@@ -499,7 +471,6 @@ Tab::Tab(BrowserWindow& window)
     };
 
     view().on_title_change = [this](auto const& title) {
-        m_history.update_title(title);
         m_title = title;
 
         if (on_title_change)
@@ -653,8 +624,34 @@ Tab::Tab(BrowserWindow& window)
         m_select_dropdown_closed_by_action = false;
         m_select_dropdown->remove_all_actions();
         m_select_dropdown->set_minimum_width(minimum_width);
+
+        auto add_menu_item = [this](Web::HTML::SelectItemOption const& item_option, bool in_option_group) {
+            auto action = GUI::Action::create(in_option_group ? ByteString::formatted("    {}", item_option.label) : item_option.label.to_byte_string(), [this, item_option](GUI::Action&) {
+                m_select_dropdown_closed_by_action = true;
+                view().select_dropdown_closed(item_option.id);
+            });
+            action->set_checkable(true);
+            action->set_checked(item_option.selected);
+            action->set_enabled(!item_option.disabled);
+            m_select_dropdown->add_action(action);
+        };
+
         for (auto const& item : items) {
-            select_dropdown_add_item(*m_select_dropdown, item);
+            if (item.has<Web::HTML::SelectItemOptionGroup>()) {
+                auto const& item_option_group = item.get<Web::HTML::SelectItemOptionGroup>();
+                auto subtitle = GUI::Action::create(item_option_group.label.to_byte_string(), nullptr);
+                subtitle->set_enabled(false);
+                m_select_dropdown->add_action(subtitle);
+
+                for (auto const& item_option : item_option_group.items)
+                    add_menu_item(item_option, true);
+            }
+
+            if (item.has<Web::HTML::SelectItemOption>())
+                add_menu_item(item.get<Web::HTML::SelectItemOption>(), false);
+
+            if (item.has<Web::HTML::SelectItemSeparator>())
+                m_select_dropdown->add_separator();
         }
 
         m_select_dropdown->popup(view().screen_relative_rect().location().translated(content_position));
@@ -727,7 +724,7 @@ Tab::Tab(BrowserWindow& window)
         view.take_screenshot(type)
             ->when_resolved([this](auto const& path) {
                 auto message = MUST(String::formatted("Screenshot saved to: {}", path));
-                auto response = GUI::MessageBox::show(&this->window(), message, "Ladybird"sv, GUI::MessageBox::Type::Information, GUI::MessageBox::InputType::OKReveal);
+                auto response = GUI::MessageBox::show(&this->window(), message, "Browser"sv, GUI::MessageBox::Type::Information, GUI::MessageBox::InputType::OKReveal);
 
                 if (response == GUI::MessageBox::ExecResult::Reveal)
                     Desktop::Launcher::open(URL::create_with_file_scheme(path.dirname()));
@@ -794,31 +791,6 @@ Tab::Tab(BrowserWindow& window)
     };
 }
 
-void Tab::select_dropdown_add_item(GUI::Menu& menu, Web::HTML::SelectItem const& item)
-{
-    if (item.type == Web::HTML::SelectItem::Type::OptionGroup) {
-        auto subtitle = GUI::Action::create(MUST(ByteString::from_utf8(item.label.value_or(""_string))), nullptr);
-        subtitle->set_enabled(false);
-        menu.add_action(subtitle);
-
-        for (auto const& item : *item.items) {
-            select_dropdown_add_item(menu, item);
-        }
-    }
-    if (item.type == Web::HTML::SelectItem::Type::Option) {
-        auto action = GUI::Action::create(MUST(ByteString::from_utf8(item.label.value_or(""_string))), [this, item](GUI::Action&) {
-            m_select_dropdown_closed_by_action = true;
-            view().select_dropdown_closed(item.value.value_or(""_string));
-        });
-        action->set_checkable(true);
-        action->set_checked(item.selected);
-        menu.add_action(action);
-    }
-    if (item.type == Web::HTML::SelectItem::Type::Separator) {
-        menu.add_separator();
-    }
-}
-
 void Tab::update_reset_zoom_button()
 {
     auto zoom_level = view().zoom_level();
@@ -830,9 +802,8 @@ void Tab::update_reset_zoom_button()
     }
 }
 
-void Tab::load(URL::URL const& url, LoadType load_type)
+void Tab::load(URL::URL const& url)
 {
-    m_is_history_navigation = (load_type == LoadType::HistoryNavigation);
     m_web_content_view->load(url);
     m_location_box->set_focus(false);
 }
@@ -844,30 +815,17 @@ URL::URL Tab::url() const
 
 void Tab::reload()
 {
-    if (m_history.is_empty())
-        return;
-
-    load(url());
+    view().reload();
 }
 
-void Tab::go_back(int steps)
+void Tab::go_back()
 {
-    if (!m_history.can_go_back(steps))
-        return;
-
-    m_history.go_back(steps);
-    update_actions();
-    load(m_history.current().url, LoadType::HistoryNavigation);
+    view().traverse_the_history_by_delta(-1);
 }
 
-void Tab::go_forward(int steps)
+void Tab::go_forward()
 {
-    if (!m_history.can_go_forward(steps))
-        return;
-
-    m_history.go_forward(steps);
-    update_actions();
-    load(m_history.current().url, LoadType::HistoryNavigation);
+    view().traverse_the_history_by_delta(1);
 }
 
 void Tab::update_actions()
@@ -875,9 +833,8 @@ void Tab::update_actions()
     auto& window = this->window();
     if (this != &window.active_tab())
         return;
-    window.go_back_action().set_enabled(m_history.can_go_back());
-    window.go_forward_action().set_enabled(m_history.can_go_forward());
-    window.reload_action().set_enabled(!m_history.is_empty());
+    window.go_back_action().set_enabled(m_can_navigate_back);
+    window.go_forward_action().set_enabled(m_can_navigate_forward);
 }
 
 ErrorOr<void> Tab::bookmark_current_url()
@@ -1076,8 +1033,8 @@ void Tab::show_history_inspector()
         m_history_widget = history_window->set_main_widget<HistoryWidget>();
     }
 
+    // FIXME: Reimplement viewing history entries using WebContent's history.
     m_history_widget->clear_history_entries();
-    m_history_widget->set_history_entries(m_history.get_all_history_entries());
 
     auto* window = m_history_widget->window();
     window->show();

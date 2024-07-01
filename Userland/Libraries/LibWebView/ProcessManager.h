@@ -4,13 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#pragma once
+
 #include <AK/Types.h>
 #include <AK/Vector.h>
 #include <LibCore/EventReceiver.h>
+#include <LibCore/Platform/ProcessStatistics.h>
+#include <LibThreading/Mutex.h>
 #include <LibWebView/Forward.h>
-#include <LibWebView/Platform/ProcessStatistics.h>
-
-#pragma once
+#include <LibWebView/ProcessInfo.h>
 
 namespace WebView {
 
@@ -24,17 +26,21 @@ public:
 
     void add_process(WebView::ProcessType, pid_t);
     void remove_process(pid_t);
+    ProcessInfo* find_process(pid_t);
+
+#if defined(AK_OS_MACH)
+    void add_process(pid_t, Core::MachPort&&);
+#endif
 
     void update_all_processes();
-    Vector<ProcessInfo> processes() const { return m_statistics.processes; }
-
     String generate_html();
 
 private:
     ProcessManager();
     ~ProcessManager();
 
-    ProcessStatistics m_statistics;
+    Core::Platform::ProcessStatistics m_statistics;
+    Threading::Mutex m_lock;
 };
 
 }

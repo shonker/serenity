@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2023-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -12,7 +12,6 @@
 #include <LibWeb/CSS/PreferredColorScheme.h>
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/AudioPlayState.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWebView/Forward.h>
 
 #import <System/Cocoa.h>
@@ -29,16 +28,14 @@
 - (void)loadURL:(URL::URL const&)url;
 - (void)onLoadStart:(URL::URL const&)url isRedirect:(BOOL)is_redirect;
 - (void)onLoadFinish:(URL::URL const&)url;
-- (void)onURLUpdated:(URL::URL const&)url
-     historyBehavior:(Web::HTML::HistoryHandlingBehavior)history_behavior;
+
+- (void)onURLChange:(URL::URL const&)url;
+- (void)onBackNavigationEnabled:(BOOL)back_enabled
+       forwardNavigationEnabled:(BOOL)forward_enabled;
 
 - (void)onTitleChange:(ByteString const&)title;
 - (void)onFaviconChange:(Gfx::Bitmap const&)bitmap;
 - (void)onAudioPlayStateChange:(Web::HTML::AudioPlayState)play_state;
-
-- (void)onNavigateBack;
-- (void)onNavigateForward;
-- (void)onReload;
 
 @end
 
@@ -49,6 +46,10 @@
 - (void)loadURL:(URL::URL const&)url;
 - (void)loadHTML:(StringView)html;
 
+- (void)navigateBack;
+- (void)navigateForward;
+- (void)reload;
+
 - (WebView::ViewImplementation&)view;
 - (String const&)handle;
 
@@ -58,6 +59,11 @@
 - (void)handleVisibility:(BOOL)is_visible;
 
 - (void)setPreferredColorScheme:(Web::CSS::PreferredColorScheme)color_scheme;
+
+- (void)findInPage:(NSString*)query
+    caseSensitivity:(CaseSensitivity)case_sensitivity;
+- (void)findInPageNextMatch;
+- (void)findInPagePreviousMatch;
 
 - (void)zoomIn;
 - (void)zoomOut;

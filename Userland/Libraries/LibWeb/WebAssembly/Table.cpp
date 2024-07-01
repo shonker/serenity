@@ -9,6 +9,7 @@
 #include <LibJS/Runtime/VM.h>
 #include <LibWasm/Types.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/TablePrototype.h>
 #include <LibWeb/WebAssembly/Table.h>
 #include <LibWeb/WebAssembly/WebAssembly.h>
 
@@ -45,12 +46,13 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Table>> Table::construct_impl(JS::Realm& re
     Wasm::Limits limits { descriptor.initial, move(descriptor.maximum) };
     Wasm::TableType table_type { reference_type, move(limits) };
 
-    auto address = Detail::s_abstract_machine.store().allocate(table_type);
+    auto& cache = Detail::get_cache(realm);
+    auto address = cache.abstract_machine().store().allocate(table_type);
     if (!address.has_value())
         return vm.throw_completion<JS::TypeError>("Wasm Table allocation failed"sv);
 
     auto const& reference = reference_value.value().get<Wasm::Reference>();
-    auto& table = *Detail::s_abstract_machine.store().get(*address);
+    auto& table = *cache.abstract_machine().store().get(*address);
     for (auto& element : table.elements())
         element = reference;
 
@@ -74,7 +76,8 @@ WebIDL::ExceptionOr<u32> Table::grow(u32 delta, JS::Value value)
 {
     auto& vm = this->vm();
 
-    auto* table = Detail::s_abstract_machine.store().get(address());
+    auto& cache = Detail::get_cache(realm());
+    auto* table = cache.abstract_machine().store().get(address());
     if (!table)
         return vm.throw_completion<JS::RangeError>("Could not find the memory table to grow"sv);
 
@@ -94,7 +97,8 @@ WebIDL::ExceptionOr<JS::Value> Table::get(u32 index) const
 {
     auto& vm = this->vm();
 
-    auto* table = Detail::s_abstract_machine.store().get(address());
+    auto& cache = Detail::get_cache(realm());
+    auto* table = cache.abstract_machine().store().get(address());
     if (!table)
         return vm.throw_completion<JS::RangeError>("Could not find the memory table"sv);
 
@@ -102,10 +106,10 @@ WebIDL::ExceptionOr<JS::Value> Table::get(u32 index) const
         return vm.throw_completion<JS::RangeError>("Table element index out of range"sv);
 
     auto& ref = table->elements()[index];
-    if (!ref.has_value())
+    if (!ref.ref().has<Wasm::Reference::Null>())
         return JS::js_undefined();
 
-    Wasm::Value wasm_value { ref.value() };
+    Wasm::Value wasm_value { ref };
     return Detail::to_js_value(vm, wasm_value);
 }
 
@@ -114,7 +118,8 @@ WebIDL::ExceptionOr<void> Table::set(u32 index, JS::Value value)
 {
     auto& vm = this->vm();
 
-    auto* table = Detail::s_abstract_machine.store().get(address());
+    auto& cache = Detail::get_cache(realm());
+    auto* table = cache.abstract_machine().store().get(address());
     if (!table)
         return vm.throw_completion<JS::RangeError>("Could not find the memory table"sv);
 
@@ -134,7 +139,8 @@ WebIDL::ExceptionOr<u32> Table::length() const
 {
     auto& vm = this->vm();
 
-    auto* table = Detail::s_abstract_machine.store().get(address());
+    auto& cache = Detail::get_cache(realm());
+    auto* table = cache.abstract_machine().store().get(address());
     if (!table)
         return vm.throw_completion<JS::RangeError>("Could not find the memory table"sv);
 

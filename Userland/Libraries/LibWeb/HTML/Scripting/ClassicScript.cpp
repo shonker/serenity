@@ -56,10 +56,10 @@ JS::NonnullGCPtr<ClassicScript> ClassicScript::create(ByteString filename, Strin
     // 11. If result is a list of errors, then:
     if (result.is_error()) {
         auto& parse_error = result.error().first();
-        dbgln_if(HTML_SCRIPT_DEBUG, "ClassicScript: Failed to parse: {}", parse_error.to_byte_string());
+        dbgln_if(HTML_SCRIPT_DEBUG, "ClassicScript: Failed to parse: {}", parse_error.to_string());
 
         // 1. Set script's parse error and its error to rethrow to result[0].
-        script->set_parse_error(JS::SyntaxError::create(environment_settings_object.realm(), parse_error.to_string().release_value_but_fixme_should_propagate_errors()));
+        script->set_parse_error(JS::SyntaxError::create(environment_settings_object.realm(), parse_error.to_string()));
         script->set_error_to_rethrow(script->parse_error());
 
         // 2. Return script.
@@ -91,7 +91,7 @@ JS::Completion ClassicScript::run(RethrowErrors rethrow_errors, JS::GCPtr<JS::En
 
     // 5. If script's error to rethrow is not null, then set evaluationStatus to Completion { [[Type]]: throw, [[Value]]: script's error to rethrow, [[Target]]: empty }.
     if (!error_to_rethrow().is_null()) {
-        evaluation_status = JS::Completion { JS::Completion::Type::Throw, error_to_rethrow(), {} };
+        evaluation_status = JS::Completion { JS::Completion::Type::Throw, error_to_rethrow() };
     } else {
         auto timer = Core::ElapsedTimer::start_new();
 

@@ -13,11 +13,31 @@
 #include <AK/IterationDecision.h>
 #include <AK/MemoryStream.h>
 #include <AK/Optional.h>
+#include <AK/RecursionDecision.h>
 #include <AK/Span.h>
 
 namespace DeviceTree {
 
 struct DeviceTreeProperty {
+    class ValueStream : public FixedMemoryStream {
+    public:
+        using AK::FixedMemoryStream::FixedMemoryStream;
+
+        ErrorOr<u32> read_cell()
+        {
+            return read_value<BigEndian<u32>>();
+        }
+
+        ErrorOr<FlatPtr> read_cells(u32 cell_size)
+        {
+            // FIXME: There are rare cases of 3 cell size big values, even in addresses, especially in addresses
+            VERIFY(cell_size <= 2);
+            if (cell_size == 1)
+                return read_value<BigEndian<u32>>();
+            return read_value<BigEndian<u64>>();
+        }
+    };
+
     ReadonlyBytes raw_data;
 
     size_t size() const { return raw_data.size(); }
@@ -72,10 +92,13 @@ struct DeviceTreeProperty {
         return {};
     }
 
-    FixedMemoryStream as_stream() const { return FixedMemoryStream { raw_data }; }
+    ValueStream as_stream() const { return ValueStream { raw_data }; }
 };
 
 class DeviceTreeNodeView {
+    AK_MAKE_NONCOPYABLE(DeviceTreeNodeView);
+    AK_MAKE_DEFAULT_MOVABLE(DeviceTreeNodeView);
+
 public:
     bool has_property(StringView prop) const { return m_properties.contains(prop); }
     bool has_child(StringView child) const { return m_children.contains(child); }
@@ -168,6 +191,28 @@ public:
     //        bonus points if it could automatically recurse in the tree under some conditions,
     //        like "simple-bus" or "pci-bridge" nodes
 
+    auto for_each_node(CallableAs<ErrorOr<RecursionDecision>, StringView, DeviceTreeNodeView const&> auto callback) const
+    {
+        auto iterate = [&](auto self, StringView name, DeviceTreeNodeView const& node) -> ErrorOr<RecursionDecision> {
+            auto result = TRY(callback(name, node));
+
+            if (result == RecursionDecision::Recurse) {
+                for (auto const& [name, child] : node.children()) {
+                    auto child_result = TRY(self(self, name, child));
+
+                    if (child_result == RecursionDecision::Break)
+                        return RecursionDecision::Break;
+                }
+
+                return RecursionDecision::Continue;
+            }
+
+            return result;
+        };
+
+        return iterate(iterate, "/"sv, *this);
+    }
+
     DeviceTreeNodeView const* phandle(u32 phandle) const
     {
         if (phandle >= m_phandles.size())
@@ -182,6 +227,28 @@ private:
         : DeviceTreeNodeView(nullptr)
         , m_flattened_device_tree(flattened_device_tree)
     {
+    }
+
+    auto for_each_node(CallableAs<ErrorOr<RecursionDecision>, StringView, DeviceTreeNodeView&> auto callback)
+    {
+        auto iterate = [&](auto self, StringView name, DeviceTreeNodeView& node) -> ErrorOr<RecursionDecision> {
+            auto result = TRY(callback(name, node));
+
+            if (result == RecursionDecision::Recurse) {
+                for (auto& [name, child] : node.children()) {
+                    auto child_result = TRY(self(self, name, child));
+
+                    if (child_result == RecursionDecision::Break)
+                        return RecursionDecision::Break;
+                }
+
+                return RecursionDecision::Continue;
+            }
+
+            return result;
+        };
+
+        return iterate(iterate, "/"sv, *this);
     }
 
     ErrorOr<void> set_phandle(u32 phandle, DeviceTreeNodeView* node)

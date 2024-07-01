@@ -126,6 +126,11 @@ Box const* Node::containing_block() const
     return nearest_ancestor_capable_of_forming_a_containing_block(*this);
 }
 
+Box const* Node::static_position_containing_block() const
+{
+    return nearest_ancestor_capable_of_forming_a_containing_block(*this);
+}
+
 Box const* Node::non_anonymous_containing_block() const
 {
     auto nearest_ancestor_box = containing_block();
@@ -796,8 +801,14 @@ void NodeWithStyle::apply_style(const CSS::StyleProperties& computed_style)
     if (auto mask = computed_style.property(CSS::PropertyID::Mask); mask->is_url())
         computed_values.set_mask(mask->as_url().url());
 
-    if (auto clip_path = computed_style.property(CSS::PropertyID::ClipPath); clip_path->is_url())
+    auto clip_path = computed_style.property(CSS::PropertyID::ClipPath);
+    if (clip_path->is_url())
         computed_values.set_clip_path(clip_path->as_url().url());
+    else if (clip_path->is_basic_shape())
+        computed_values.set_clip_path(clip_path->as_basic_shape());
+
+    if (auto clip_rule = computed_style.clip_rule(); clip_rule.has_value())
+        computed_values.set_clip_rule(*clip_rule);
 
     if (auto fill_rule = computed_style.fill_rule(); fill_rule.has_value())
         computed_values.set_fill_rule(*fill_rule);
@@ -877,6 +888,7 @@ void NodeWithStyle::propagate_style_to_anonymous_wrappers()
             auto& child_computed_values = static_cast<CSS::MutableComputedValues&>(static_cast<CSS::ComputedValues&>(const_cast<CSS::ImmutableComputedValues&>(child.computed_values())));
             child_computed_values.inherit_from(computed_values());
         }
+        return IterationDecision::Continue;
     });
 }
 
@@ -887,7 +899,7 @@ bool Node::is_root_element() const
     return is<HTML::HTMLHtmlElement>(*dom_node());
 }
 
-ByteString Node::debug_description() const
+String Node::debug_description() const
 {
     StringBuilder builder;
     builder.append(class_name());
@@ -903,7 +915,7 @@ ByteString Node::debug_description() const
     } else {
         builder.append("(anonymous)"sv);
     }
-    return builder.to_byte_string();
+    return MUST(builder.to_string());
 }
 
 CSS::Display Node::display() const

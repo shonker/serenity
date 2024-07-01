@@ -59,7 +59,7 @@ JS::GCPtr<NavigableContainer> NavigableContainer::navigable_container_with_conte
 }
 
 // https://html.spec.whatwg.org/multipage/document-sequences.html#create-a-new-child-navigable
-WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
+WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable(JS::SafeFunction<void()> afterSessionHistoryUpdate)
 {
     // 1. Let parentNavigable be element's node navigable.
     auto parent_navigable = navigable();
@@ -95,7 +95,7 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
     document_state->set_about_base_url(document->about_base_url());
 
     // 7. Let navigable be a new navigable.
-    JS::NonnullGCPtr<Navigable> navigable = *heap().allocate_without_realm<Navigable>();
+    JS::NonnullGCPtr<Navigable> navigable = *heap().allocate_without_realm<Navigable>(page);
 
     // 8. Initialize the navigable navigable given documentState and parentNavigable.
     TRY_OR_THROW_OOM(vm(), navigable->initialize_navigable(document_state, parent_navigable));
@@ -110,9 +110,8 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
     auto traversable = parent_navigable->traversable_navigable();
 
     // 12. Append the following session history traversal steps to traversable:
-    traversable->append_session_history_traversal_steps([traversable, navigable, parent_navigable, history_entry] {
+    traversable->append_session_history_traversal_steps([traversable, navigable, parent_navigable, history_entry, afterSessionHistoryUpdate = move(afterSessionHistoryUpdate)] {
         // 1. Let parentDocState be parentNavigable's active session history entry's document state.
-
         auto parent_doc_state = parent_navigable->active_session_history_entry()->document_state();
 
         // 2. Let parentNavigableEntries be the result of getting session history entries for parentNavigable.
@@ -132,11 +131,15 @@ WebIDL::ExceptionOr<void> NavigableContainer::create_new_child_navigable()
             .entries { *history_entry },
         };
 
-        // 5. Append nestedHistory to parentDocState's nested histories.
+        // 6. Append nestedHistory to parentDocState's nested histories.
         parent_doc_state->nested_histories().append(move(nested_history));
 
-        // 6. Update for navigable creation/destruction given traversable
+        // 7. Update for navigable creation/destruction given traversable
         traversable->update_for_navigable_creation_or_destruction();
+
+        if (afterSessionHistoryUpdate) {
+            afterSessionHistoryUpdate();
+        }
     });
 
     return {};
@@ -216,7 +219,8 @@ Optional<URL::URL> NavigableContainer::shared_attribute_processing_steps_for_ifr
 
     // 4. If url matches about:blank and initialInsertion is true, then perform the URL and history update steps given element's content navigable's active document and url.
     if (url_matches_about_blank(url) && initial_insertion) {
-        perform_url_and_history_update_steps(*m_content_navigable->active_document(), url);
+        auto& document = *m_content_navigable->active_document();
+        perform_url_and_history_update_steps(document, url);
     }
 
     // 5. Return url.
@@ -271,7 +275,7 @@ void NavigableContainer::destroy_the_child_navigable()
     // FIXME: 4. Inform the navigation API about child navigable destruction given navigable.
 
     // 5. Destroy a document and its descendants given navigable's active document.
-    navigable->active_document()->destroy_a_document_and_its_descendants([this, navigable] {
+    navigable->active_document()->destroy_a_document_and_its_descendants(JS::create_heap_function(heap(), [this, navigable] {
         // 3. Set container's content navigable to null.
         m_content_navigable = nullptr;
 
@@ -294,12 +298,15 @@ void NavigableContainer::destroy_the_child_navigable()
             // 1. Update for navigable creation/destruction given traversable.
             traversable->update_for_navigable_creation_or_destruction();
         });
-    });
+    }));
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#potentially-delays-the-load-event
 bool NavigableContainer::currently_delays_the_load_event() const
 {
+    if (!m_content_navigable_initialized)
+        return true;
+
     if (!m_potentially_delays_the_load_event)
         return false;
 

@@ -2,15 +2,14 @@ include(${SerenityOS_SOURCE_DIR}/Meta/CMake/public_suffix.cmake)
 
 set(SOURCES
     Attribute.cpp
+    ChromeProcess.cpp
     CookieJar.cpp
     Database.cpp
-    History.cpp
     InspectorClient.cpp
     ProcessHandle.cpp
     ProcessManager.cpp
     RequestServerAdapter.cpp
     SearchEngine.cpp
-    SocketPair.cpp
     SourceHighlighter.cpp
     URL.cpp
     UserAgent.cpp
@@ -23,18 +22,7 @@ set(SOURCES
 set(GENERATED_SOURCES ${CURRENT_LIB_GENERATED})
 
 if (SERENITYOS)
-    list(APPEND SOURCES
-        OutOfProcessWebView.cpp
-        Platform/ProcessStatisticsSerenity.cpp
-    )
-elseif(LINUX AND NOT ANDROID)
-    list(APPEND SOURCES
-        Platform/ProcessStatisticsLinux.cpp
-    )
-else()
-    list(APPEND SOURCES
-        Platform/ProcessStatisticsNoop.cpp
-    )
+    list(APPEND SOURCES OutOfProcessWebView.cpp)
 endif()
 
 embed_as_string_view(
@@ -45,6 +33,9 @@ embed_as_string_view(
     NAMESPACE "WebView"
 )
 
+compile_ipc(UIProcessServer.ipc UIProcessServerEndpoint.h)
+compile_ipc(UIProcessClient.ipc UIProcessClientEndpoint.h)
+
 set(GENERATED_SOURCES
     ${GENERATED_SOURCES}
     ../../Services/RequestServer/RequestClientEndpoint.h
@@ -54,6 +45,8 @@ set(GENERATED_SOURCES
     ../../Services/WebContent/WebDriverClientEndpoint.h
     ../../Services/WebContent/WebDriverServerEndpoint.h
     NativeStyleSheetSource.cpp
+    UIProcessClientEndpoint.h
+    UIProcessServerEndpoint.h
 )
 
 serenity_lib(LibWebView webview)

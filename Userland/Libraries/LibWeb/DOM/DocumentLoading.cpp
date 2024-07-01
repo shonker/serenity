@@ -21,9 +21,21 @@
 #include <LibWeb/HTML/Parser/HTMLParser.h>
 #include <LibWeb/Loader/GeneratedPagesLoader.h>
 #include <LibWeb/Namespace.h>
+#include <LibWeb/Platform/EventLoopPlugin.h>
 #include <LibWeb/XML/XMLDocumentBuilder.h>
 
 namespace Web {
+
+// Replaces a document's content with a simple error message.
+static void convert_to_xml_error_document(DOM::Document& document, String error_string)
+{
+    auto html_element = MUST(DOM::create_element(document, HTML::TagNames::html, Namespace::HTML));
+    auto body_element = MUST(DOM::create_element(document, HTML::TagNames::body, Namespace::HTML));
+    MUST(html_element->append_child(body_element));
+    MUST(body_element->append_child(document.heap().allocate<DOM::Text>(document.realm(), document, error_string)));
+    document.remove_all_children();
+    MUST(document.append_child(html_element));
+}
 
 static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_markdown_document(HTML::NavigationParams const& navigation_params)
 {
@@ -72,25 +84,24 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_markdown_docume
 
     return create_document_for_inline_content(navigation_params.navigable.ptr(), navigation_params.id, [&](DOM::Document& document) {
         auto& realm = document.realm();
-        auto process_body = [&document, url = navigation_params.response->url().value(), extra_head_contents](ByteBuffer data) {
+        auto process_body = JS::create_heap_function(realm.heap(), [&document, url = navigation_params.response->url().value(), extra_head_contents](ByteBuffer data) {
             auto markdown_document = Markdown::Document::parse(data);
             if (!markdown_document)
                 return;
 
             auto parser = HTML::HTMLParser::create(document, markdown_document->render_to_html(extra_head_contents), "utf-8"sv);
             parser->run(url);
-        };
+        });
 
-        auto process_body_error = [](auto) {
+        auto process_body_error = JS::create_heap_function(realm.heap(), [](JS::Value) {
             dbgln("FIXME: Load html page with an error if read of body failed.");
-        };
+        });
 
         navigation_params.response->body()->fully_read(
-                                              realm,
-                                              move(process_body),
-                                              move(process_body_error),
-                                              JS::NonnullGCPtr { realm.global_object() })
-            .release_value_but_fixme_should_propagate_errors();
+            realm,
+            process_body,
+            process_body_error,
+            JS::NonnullGCPtr { realm.global_object() });
     });
 }
 
@@ -107,8 +118,10 @@ bool build_xml_document(DOM::Document& document, ByteBuffer const& data, Optiona
     }
     VERIFY(decoder.has_value());
     // Well-formed XML documents contain only properly encoded characters
-    if (!decoder->validate(data))
+    if (!decoder->validate(data)) {
+        convert_to_xml_error_document(document, "XML Document contains improperly-encoded characters"_string);
         return false;
+    }
     auto source = decoder->to_utf8(data).release_value_but_fixme_should_propagate_errors();
     XML::Parser parser(source, { .resolve_external_resource = resolve_xml_resource });
     XMLDocumentBuilder builder { document };
@@ -148,17 +161,19 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_html_document(H
     //    causes a load event to be fired.
     else {
         // FIXME: Parse as we receive the document data, instead of waiting for the whole document to be fetched first.
-        auto process_body = [document, url = navigation_params.response->url().value()](ByteBuffer data) {
-            auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, data);
-            parser->run(url);
-        };
+        auto process_body = JS::create_heap_function(document->heap(), [document, url = navigation_params.response->url().value()](ByteBuffer data) {
+            Platform::EventLoopPlugin::the().deferred_invoke([document = document, data = move(data), url = url] {
+                auto parser = HTML::HTMLParser::create_with_uncertain_encoding(document, data);
+                parser->run(url);
+            });
+        });
 
-        auto process_body_error = [](auto) {
+        auto process_body_error = JS::create_heap_function(document->heap(), [](JS::Value) {
             dbgln("FIXME: Load html page with an error if read of body failed.");
-        };
+        });
 
         auto& realm = document->realm();
-        TRY(navigation_params.response->body()->fully_read(realm, move(process_body), move(process_body_error), JS::NonnullGCPtr { realm.global_object() }));
+        navigation_params.response->body()->fully_read(realm, process_body, process_body_error, JS::NonnullGCPtr { realm.global_object() });
     }
 
     // 4. Return document.
@@ -195,13 +210,13 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_xml_document(HT
 
     // FIXME: Actually follow the spec! This is just the ad-hoc code we had before, modified somewhat.
 
-    auto document = TRY(DOM::Document::create_and_initialize(DOM::Document::Type::XML, "application/xhtml+xml"_string, navigation_params));
+    auto document = TRY(DOM::Document::create_and_initialize(DOM::Document::Type::XML, type.essence(), navigation_params));
 
     Optional<String> content_encoding;
     if (auto maybe_encoding = type.parameters().get("charset"sv); maybe_encoding.has_value())
         content_encoding = maybe_encoding.value();
 
-    auto process_body = [document, url = navigation_params.response->url().value(), content_encoding = move(content_encoding)](ByteBuffer data) {
+    auto process_body = JS::create_heap_function(document->heap(), [document, url = navigation_params.response->url().value(), content_encoding = move(content_encoding)](ByteBuffer data) {
         Optional<TextCodec::Decoder&> decoder;
         // The actual HTTP headers and other metadata, not the headers as mutated or implied by the algorithms given in this specification,
         // are the ones that must be used when determining the character encoding according to the rules given in the above specifications.
@@ -216,12 +231,20 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_xml_document(HT
         if (!decoder->validate(data)) {
             // FIXME: Insert error message into the document.
             dbgln("XML Document contains improperly-encoded characters");
+            convert_to_xml_error_document(document, "XML Document contains improperly-encoded characters"_string);
+
+            // NOTE: This ensures that the `load` event gets fired for the frame loading this document.
+            document->completely_finish_loading();
             return;
         }
         auto source = decoder->to_utf8(data);
         if (source.is_error()) {
             // FIXME: Insert error message into the document.
             dbgln("Failed to decode XML document: {}", source.error());
+            convert_to_xml_error_document(document, MUST(String::formatted("Failed to decode XML document: {}", source.error())));
+
+            // NOTE: This ensures that the `load` event gets fired for the frame loading this document.
+            document->completely_finish_loading();
             return;
         }
         XML::Parser parser(source.value(), { .resolve_external_resource = resolve_xml_resource });
@@ -230,15 +253,18 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_xml_document(HT
         if (result.is_error()) {
             // FIXME: Insert error message into the document.
             dbgln("Failed to parse XML document: {}", result.error());
-        }
-    };
+            convert_to_xml_error_document(document, MUST(String::formatted("Failed to parse XML document: {}", result.error())));
 
-    auto process_body_error = [](auto) {
+            // NOTE: XMLDocumentBuilder ensures that the `load` event gets fired. We don't need to do anything else here.
+        }
+    });
+
+    auto process_body_error = JS::create_heap_function(document->heap(), [](JS::Value) {
         dbgln("FIXME: Load html page with an error if read of body failed.");
-    };
+    });
 
     auto& realm = document->realm();
-    TRY(navigation_params.response->body()->fully_read(realm, move(process_body), move(process_body_error), JS::NonnullGCPtr { realm.global_object() }));
+    navigation_params.response->body()->fully_read(realm, process_body, process_body_error, JS::NonnullGCPtr { realm.global_object() });
 
     return document;
 }
@@ -270,7 +296,7 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_text_document(H
     //    document's relevant global object to have the parser to process the implied EOF character, which eventually causes a
     //    load event to be fired.
     // FIXME: Parse as we receive the document data, instead of waiting for the whole document to be fetched first.
-    auto process_body = [document, url = navigation_params.response->url().value()](ByteBuffer data) {
+    auto process_body = JS::create_heap_function(document->heap(), [document, url = navigation_params.response->url().value()](ByteBuffer data) {
         auto encoding = run_encoding_sniffing_algorithm(document, data);
         dbgln_if(HTML_PARSER_DEBUG, "The encoding sniffing algorithm returned encoding '{}'", encoding);
 
@@ -294,14 +320,14 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_text_document(H
         MUST(document->head()->append_child(title_element));
         auto title_text = document->heap().allocate<DOM::Text>(document->realm(), document, title);
         MUST(title_element->append_child(*title_text));
-    };
+    });
 
-    auto process_body_error = [](auto) {
+    auto process_body_error = JS::create_heap_function(document->heap(), [](JS::Value) {
         dbgln("FIXME: Load html page with an error if read of body failed.");
-    };
+    });
 
     auto& realm = document->realm();
-    TRY(navigation_params.response->body()->fully_read(realm, move(process_body), move(process_body_error), JS::NonnullGCPtr { realm.global_object() }));
+    navigation_params.response->body()->fully_read(realm, process_body, process_body_error, JS::NonnullGCPtr { realm.global_object() });
 
     // 6. Return document.
     return document;
@@ -389,11 +415,11 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_media_document(
     //        However, if we don't, then we get stuck in HTMLParser::the_end() waiting for the media file to load, which
     //        never happens.
     auto& realm = document->realm();
-    TRY(navigation_params.response->body()->fully_read(
+    navigation_params.response->body()->fully_read(
         realm,
-        [document](auto) { HTML::HTMLParser::the_end(document); },
-        [](auto) {},
-        JS::NonnullGCPtr { realm.global_object() }));
+        JS::create_heap_function(document->heap(), [document](ByteBuffer) { HTML::HTMLParser::the_end(document); }),
+        JS::create_heap_function(document->heap(), [](JS::Value) {}),
+        JS::NonnullGCPtr { realm.global_object() });
 
     // 9. Return document.
     return document;
@@ -411,6 +437,30 @@ static WebIDL::ExceptionOr<JS::NonnullGCPtr<DOM::Document>> load_media_document(
     // be true for the Document.
 }
 
+bool can_load_document_with_type(MimeSniff::MimeType const& type)
+{
+    if (type.is_html())
+        return true;
+    if (type.is_xml())
+        return true;
+    if (type.is_javascript()
+        || type.is_json()
+        || type.essence() == "text/css"_string
+        || type.essence() == "text/plain"_string
+        || type.essence() == "text/vtt"_string) {
+        return true;
+    }
+    if (type.essence() == "multipart/x-mixed-replace"_string)
+        return true;
+    if (type.is_image() || type.is_audio_or_video())
+        return true;
+    if (type.essence() == "application/pdf"_string || type.essence() == "text/pdf"_string)
+        return true;
+    if (type.essence() == "text/markdown"sv)
+        return true;
+    return false;
+}
+
 // https://html.spec.whatwg.org/multipage/browsing-the-web.html#loading-a-document
 JS::GCPtr<DOM::Document> load_document(HTML::NavigationParams const& navigation_params)
 {
@@ -418,7 +468,7 @@ JS::GCPtr<DOM::Document> load_document(HTML::NavigationParams const& navigation_
     // and origin initiatorOrigin, perform the following steps. They return a Document or null.
 
     // 1. Let type be the computed type of navigationParams's response.
-    auto extracted_mime_type = navigation_params.response->header_list()->extract_mime_type().release_value_but_fixme_should_propagate_errors();
+    auto extracted_mime_type = navigation_params.response->header_list()->extract_mime_type();
     if (!extracted_mime_type.has_value())
         return nullptr;
     auto type = extracted_mime_type.release_value();

@@ -172,11 +172,14 @@ namespace Web::HTML {
 #define SWITCH_TO_AND_EMIT_CURRENT_CHARACTER(new_state) \
     SWITCH_TO_AND_EMIT_CHARACTER(current_input_character.value(), new_state)
 
+// clang-format-18 handles the `state:` label rather badly.
+// clang-format off
 #define BEGIN_STATE(state) \
     state:                 \
     case State::state: {   \
         {                  \
             {
+// clang-format on
 
 #define END_STATE         \
     VERIFY_NOT_REACHED(); \
@@ -2892,7 +2895,7 @@ void HTMLTokenizer::restore_to(Utf8CodePointIterator const& new_iterator)
 
 String HTMLTokenizer::consume_current_builder()
 {
-    auto string = MUST(m_current_builder.to_string());
+    auto string = m_current_builder.to_string_without_validation();
     m_current_builder.clear();
     return string;
 }

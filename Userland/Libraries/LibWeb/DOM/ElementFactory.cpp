@@ -84,9 +84,11 @@
 #include <LibWeb/MathML/MathMLElement.h>
 #include <LibWeb/MathML/TagNames.h>
 #include <LibWeb/Namespace.h>
+#include <LibWeb/SVG/SVGAElement.h>
 #include <LibWeb/SVG/SVGCircleElement.h>
 #include <LibWeb/SVG/SVGClipPathElement.h>
 #include <LibWeb/SVG/SVGDefsElement.h>
+#include <LibWeb/SVG/SVGDescElement.h>
 #include <LibWeb/SVG/SVGEllipseElement.h>
 #include <LibWeb/SVG/SVGForeignObjectElement.h>
 #include <LibWeb/SVG/SVGGElement.h>
@@ -439,6 +441,8 @@ static JS::GCPtr<SVG::SVGElement> create_svg_element(JS::Realm& realm, Document&
         return realm.heap().allocate<SVG::SVGCircleElement>(realm, document, move(qualified_name));
     if (local_name.equals_ignoring_ascii_case(SVG::TagNames::defs))
         return realm.heap().allocate<SVG::SVGDefsElement>(realm, document, move(qualified_name));
+    if (local_name == SVG::TagNames::desc)
+        return realm.heap().allocate<SVG::SVGDescElement>(realm, document, move(qualified_name));
     if (local_name == SVG::TagNames::ellipse)
         return realm.heap().allocate<SVG::SVGEllipseElement>(realm, document, move(qualified_name));
     if (local_name.equals_ignoring_ascii_case(SVG::TagNames::foreignObject))
@@ -479,6 +483,8 @@ static JS::GCPtr<SVG::SVGElement> create_svg_element(JS::Realm& realm, Document&
         return realm.heap().allocate<SVG::SVGUseElement>(realm, document, move(qualified_name));
     if (local_name == SVG::TagNames::script)
         return realm.heap().allocate<SVG::SVGScriptElement>(realm, document, move(qualified_name));
+    if (local_name == SVG::TagNames::a)
+        return realm.heap().allocate<SVG::SVGAElement>(realm, document, move(qualified_name));
 
     return nullptr;
 }

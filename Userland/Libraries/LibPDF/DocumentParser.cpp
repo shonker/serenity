@@ -464,7 +464,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
 
     auto field_to_long = [](ReadonlyBytes field) -> long {
         long value = 0;
-        const u8 max = (field.size() - 1) * 8;
+        u8 const max = (field.size() - 1) * 8;
         for (size_t i = 0; i < field.size(); ++i) {
             value |= static_cast<long>(field[i]) << (max - (i * 8));
         }
@@ -477,7 +477,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_stream()
         Vector<XRefEntry> entries;
 
         for (int i = 0; i < count; i++) {
-            Array<long, 3> fields;
+            Array<u64, 3> fields;
             for (size_t field_index = 0; field_index < 3; ++field_index) {
                 if (!field_sizes->at(field_index).has_u32())
                     return error("Malformed xref stream");
@@ -562,7 +562,7 @@ PDFErrorOr<NonnullRefPtr<XRefTable>> DocumentParser::parse_xref_table()
                 m_reader.move_by(2);
             }
 
-            auto offset = strtol(offset_string.characters(), nullptr, 10);
+            u64 offset = strtoll(offset_string.characters(), nullptr, 10);
             auto generation = strtol(generation_string.characters(), nullptr, 10);
 
             entries.append({ offset, static_cast<u16>(generation), letter == 'n' });
@@ -642,13 +642,13 @@ PDFErrorOr<DocumentParser::PageOffsetHintTable> DocumentParser::parse_page_offse
     size_t offset = 0;
 
     auto read_u32 = [&] {
-        u32 data = reinterpret_cast<const u32*>(hint_stream_bytes.data() + offset)[0];
+        u32 data = reinterpret_cast<u32 const*>(hint_stream_bytes.data() + offset)[0];
         offset += 4;
         return AK::convert_between_host_and_big_endian(data);
     };
 
     auto read_u16 = [&] {
-        u16 data = reinterpret_cast<const u16*>(hint_stream_bytes.data() + offset)[0];
+        u16 data = reinterpret_cast<u16 const*>(hint_stream_bytes.data() + offset)[0];
         offset += 2;
         return AK::convert_between_host_and_big_endian(data);
     };

@@ -623,6 +623,11 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
 
     auto independent_formatting_context = create_independent_formatting_context_if_needed(m_state, box);
 
+    // NOTE: It is possible to encounter SVGMaskBox nodes while doing layout of formatting context established by <foreignObject> with a mask.
+    //       We should skip and let SVGFormattingContext take care of them.
+    if (box.is_svg_mask_box())
+        return;
+
     if (!independent_formatting_context && !is<BlockContainer>(box)) {
         dbgln("FIXME: Block-level box is not BlockContainer but does not create formatting context: {}", box.debug_description());
         return;
@@ -664,7 +669,7 @@ void BlockFormattingContext::layout_block_level_box(Box const& box, BlockContain
                 m_margin_state.reset();
             } else if (!m_margin_state.has_block_container_waiting_for_final_y_position()) {
                 // margin-top of block container can be updated during children layout hence it's final y position yet to be determined
-                m_margin_state.register_block_container_y_position_update_callback([&](CSSPixels margin_top) {
+                m_margin_state.register_block_container_y_position_update_callback([&, introduce_clearance](CSSPixels margin_top) {
                     if (introduce_clearance == DidIntroduceClearance::No) {
                         place_block_level_element_in_normal_flow_vertically(box, margin_top + y);
                     }
@@ -1128,7 +1133,7 @@ BlockFormattingContext::SpaceUsedAndContainingMarginForFloats BlockFormattingCon
                 + floating_box.used_values.content_width()
                 + floating_box.used_values.margin_box_right();
             space_and_containing_margin.left_total_containing_margin = offset_from_containing_block_chain_margins_between_here_and_root;
-            space_and_containing_margin.matching_left_float_box = floating_box.box.ptr();
+            space_and_containing_margin.matching_left_float_box = floating_box.box;
             break;
         }
     }
@@ -1210,6 +1215,7 @@ CSSPixels BlockFormattingContext::greatest_child_width(Box const& box) const
         box.for_each_child_of_type<Box>([&](Box const& child) {
             if (!child.is_absolutely_positioned())
                 max_width = max(max_width, m_state.get(child).margin_box_width());
+            return IterationDecision::Continue;
         });
     }
     return max_width;

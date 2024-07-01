@@ -9,18 +9,15 @@
 #include <LibWeb/Painting/BorderPainting.h>
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
 #include <LibWeb/Painting/ClipFrame.h>
+#include <LibWeb/Painting/ClippableAndScrollable.h>
 #include <LibWeb/Painting/Paintable.h>
 #include <LibWeb/Painting/PaintableFragment.h>
 #include <LibWeb/Painting/ShadowPainting.h>
 
 namespace Web::Painting {
 
-struct ScrollFrame : public RefCounted<ScrollFrame> {
-    i32 id { -1 };
-    CSSPixelPoint offset;
-};
-
-class PaintableBox : public Paintable {
+class PaintableBox : public Paintable
+    , public ClippableAndScrollable {
     JS_CELL(PaintableBox, Paintable);
 
 public:
@@ -32,9 +29,9 @@ public:
 
     virtual void paint(PaintContext&, PaintPhase) const override;
 
-    virtual Optional<CSSPixelRect> get_masking_area() const { return {}; }
-    virtual Optional<Gfx::Bitmap::MaskKind> get_mask_type() const { return {}; }
-    virtual RefPtr<Gfx::Bitmap> calculate_mask(PaintContext&, CSSPixelRect const&) const { return {}; }
+    virtual Optional<CSSPixelRect> get_masking_area() const;
+    virtual Optional<Gfx::Bitmap::MaskKind> get_mask_type() const;
+    virtual RefPtr<Gfx::Bitmap> calculate_mask(PaintContext&, CSSPixelRect const&) const;
 
     Layout::Box& layout_box() { return static_cast<Layout::Box&>(Paintable::layout_node()); }
     Layout::Box const& layout_box() const { return static_cast<Layout::Box const&>(Paintable::layout_node()); }
@@ -203,17 +200,8 @@ public:
     CSSPixels outline_offset() const { return m_outline_offset; }
 
     CSSPixelRect compute_absolute_padding_rect_with_css_transform_applied() const;
-    Gfx::AffineTransform compute_combined_css_transform() const;
 
     Optional<CSSPixelRect> get_clip_rect() const;
-
-    void set_enclosing_scroll_frame(RefPtr<ScrollFrame> scroll_frame) { m_enclosing_scroll_frame = scroll_frame; }
-    void set_enclosing_clip_frame(RefPtr<ClipFrame> clip_frame) { m_enclosing_clip_frame = clip_frame; }
-
-    Optional<int> scroll_frame_id() const;
-    Optional<CSSPixelPoint> enclosing_scroll_frame_offset() const;
-    Optional<CSSPixelRect> clip_rect() const;
-    Span<BorderRadiiClip const> border_radii_clips() const;
 
 protected:
     explicit PaintableBox(Layout::Box const&);
@@ -227,8 +215,6 @@ protected:
     virtual CSSPixelRect compute_absolute_paint_rect() const;
 
 private:
-    Vector<Gfx::Path> compute_text_clip_paths(PaintContext&) const;
-
     [[nodiscard]] virtual bool is_paintable_box() const final { return true; }
 
     enum class ScrollDirection {

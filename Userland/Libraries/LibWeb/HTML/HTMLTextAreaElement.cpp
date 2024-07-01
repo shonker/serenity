@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLTextAreaElementPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/StyleProperties.h>
 #include <LibWeb/CSS/StyleValues/DisplayStyleValue.h>
@@ -26,11 +27,11 @@ JS_DEFINE_ALLOCATOR(HTMLTextAreaElement);
 
 HTMLTextAreaElement::HTMLTextAreaElement(DOM::Document& document, DOM::QualifiedName qualified_name)
     : HTMLElement(document, move(qualified_name))
-    , m_input_event_timer(MUST(Core::Timer::create_single_shot(0, [weak_this = make_weak_ptr()]() {
+    , m_input_event_timer(Core::Timer::create_single_shot(0, [weak_this = make_weak_ptr()]() {
         if (!weak_this)
             return;
         static_cast<HTMLTextAreaElement*>(weak_this.ptr())->queue_firing_input_event();
-    })))
+    }))
 {
 }
 
@@ -66,12 +67,12 @@ void HTMLTextAreaElement::visit_edges(Cell::Visitor& visitor)
 
 void HTMLTextAreaElement::did_receive_focus()
 {
-    auto* browsing_context = document().browsing_context();
-    if (!browsing_context)
+    auto navigable = document().navigable();
+    if (!navigable)
         return;
     if (!m_text_node)
         return;
-    browsing_context->set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
+    navigable->set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
 }
 
 void HTMLTextAreaElement::did_lose_focus()
@@ -158,8 +159,8 @@ void HTMLTextAreaElement::set_value(String const& value)
             m_text_node->set_data(m_raw_value);
             update_placeholder_visibility();
 
-            if (auto* browsing_context = document().browsing_context())
-                browsing_context->set_cursor_position(DOM::Position::create(realm, *m_text_node, m_text_node->data().bytes().size()));
+            if (auto navigable = document().navigable())
+                navigable->set_cursor_position(DOM::Position::create(realm, *m_text_node, m_text_node->data().bytes().size()));
         }
     }
 }
@@ -215,8 +216,8 @@ WebIDL::UnsignedLong HTMLTextAreaElement::selection_start() const
 
     // 2. If there is no selection, return the code unit offset within the relevant value to the character that
     //    immediately follows the text entry cursor.
-    if (auto const* browsing_context = document().browsing_context()) {
-        if (auto cursor = browsing_context->cursor_position())
+    if (auto navigable = document().navigable()) {
+        if (auto cursor = navigable->cursor_position())
             return cursor->offset();
     }
 
@@ -244,8 +245,8 @@ WebIDL::UnsignedLong HTMLTextAreaElement::selection_end() const
 
     // 2. If there is no selection, return the code unit offset within the relevant value to the character that
     //    immediately follows the text entry cursor.
-    if (auto const* browsing_context = document().browsing_context()) {
-        if (auto cursor = browsing_context->cursor_position())
+    if (auto navigable = document().navigable()) {
+        if (auto cursor = navigable->cursor_position())
             return cursor->offset();
     }
 
@@ -333,7 +334,7 @@ WebIDL::ExceptionOr<void> HTMLTextAreaElement::set_rows(unsigned rows)
 
 void HTMLTextAreaElement::create_shadow_tree_if_needed()
 {
-    if (shadow_root_internal())
+    if (shadow_root())
         return;
 
     auto shadow_root = heap().allocate<DOM::ShadowRoot>(realm(), document(), *this, Bindings::ShadowRootMode::Closed);
@@ -430,7 +431,7 @@ void HTMLTextAreaElement::form_associated_element_attribute_changed(FlyString co
     }
 }
 
-void HTMLTextAreaElement::did_edit_text_node(Badge<Web::HTML::BrowsingContext>)
+void HTMLTextAreaElement::did_edit_text_node(Badge<Navigable>)
 {
     VERIFY(m_text_node);
     set_raw_value(m_text_node->data());

@@ -30,7 +30,7 @@ public:
     virtual ~GCM() = default;
 
     template<typename... Args>
-    explicit constexpr GCM<T>(Args... args)
+    explicit constexpr GCM(Args... args)
         : CTR<T>(args...)
     {
         static_assert(T::BlockSizeInBits == 128u, "GCM Mode is only available for 128-bit Ciphers");
@@ -63,7 +63,7 @@ public:
     {
         VERIFY(!ivec.is_empty());
 
-        static ByteBuffer dummy;
+        static ByteBuffer dummy = MUST(ByteBuffer::create_uninitialized(out.size()));
 
         encrypt(in, out, ivec, dummy, dummy);
     }

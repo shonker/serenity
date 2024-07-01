@@ -8,6 +8,7 @@
 #include <AK/Utf16View.h>
 #include <LibGfx/ImageFormats/CCITTDecoder.h>
 #include <LibGfx/ImageFormats/JBIG2Loader.h>
+#include <LibGfx/ImageFormats/QMArithmeticDecoder.h>
 #include <LibTextCodec/Decoder.h>
 
 // Spec: ITU-T_T_88__08_2018.pdf in the zip file here:
@@ -29,207 +30,10 @@ namespace Gfx {
 
 namespace JBIG2 {
 
-// Table E.1 – Qe values and probability estimation process
-// See also E.1.2 Coding conventions and approximations
-// and E.2.5 Probability estimation.
-struct QeEntry {
-    u16 qe;          // Sub-interval for the less probable symbol.
-    u16 nmps;        // Next index if the more probable symbol is decoded
-    u16 nlps;        // Next index if the less probable symbol is decoded
-    u16 switch_flag; // See second-to-last paragraph in E.1.2.
-};
-constexpr auto qe_table = to_array<QeEntry>({
-    { 0x5601, 1, 1, 1 },
-    { 0x3401, 2, 6, 0 },
-    { 0x1801, 3, 9, 0 },
-    { 0x0AC1, 4, 12, 0 },
-    { 0x0521, 5, 29, 0 },
-    { 0x0221, 38, 33, 0 },
-    { 0x5601, 7, 6, 1 },
-    { 0x5401, 8, 14, 0 },
-    { 0x4801, 9, 14, 0 },
-    { 0x3801, 10, 14, 0 },
-    { 0x3001, 11, 17, 0 },
-    { 0x2401, 12, 18, 0 },
-    { 0x1C01, 13, 20, 0 },
-    { 0x1601, 29, 21, 0 },
-    { 0x5601, 15, 14, 1 },
-    { 0x5401, 16, 14, 0 },
-    { 0x5101, 17, 15, 0 },
-    { 0x4801, 18, 16, 0 },
-    { 0x3801, 19, 17, 0 },
-    { 0x3401, 20, 18, 0 },
-    { 0x3001, 21, 19, 0 },
-    { 0x2801, 22, 19, 0 },
-    { 0x2401, 23, 20, 0 },
-    { 0x2201, 24, 21, 0 },
-    { 0x1C01, 25, 22, 0 },
-    { 0x1801, 26, 23, 0 },
-    { 0x1601, 27, 24, 0 },
-    { 0x1401, 28, 25, 0 },
-    { 0x1201, 29, 26, 0 },
-    { 0x1101, 30, 27, 0 },
-    { 0x0AC1, 31, 28, 0 },
-    { 0x09C1, 32, 29, 0 },
-    { 0x08A1, 33, 30, 0 },
-    { 0x0521, 34, 31, 0 },
-    { 0x0441, 35, 32, 0 },
-    { 0x02A1, 36, 33, 0 },
-    { 0x0221, 37, 34, 0 },
-    { 0x0141, 38, 35, 0 },
-    { 0x0111, 39, 36, 0 },
-    { 0x0085, 40, 37, 0 },
-    { 0x0049, 41, 38, 0 },
-    { 0x0025, 42, 39, 0 },
-    { 0x0015, 43, 40, 0 },
-    { 0x0009, 44, 41, 0 },
-    { 0x0005, 45, 42, 0 },
-    { 0x0001, 45, 43, 0 },
-    { 0x5601, 46, 46, 0 },
-});
-
-ErrorOr<ArithmeticDecoder> ArithmeticDecoder::initialize(ReadonlyBytes data)
-{
-    ArithmeticDecoder decoder { data };
-    decoder.INITDEC();
-    return decoder;
-}
-
-bool ArithmeticDecoder::get_next_bit(Context& context)
-{
-    CX = &context;
-    // Useful for comparing to Table H.1 – Encoder and decoder trace data.
-    // dbg("I={} MPS={} A={:#x} C={:#x} CT={} B={:#x}", I(CX), MPS(CX), A, C, CT, B());
-    u8 D = DECODE();
-    // dbgln(" -> D={}", D);
-    return D;
-}
-
-u16 ArithmeticDecoder::Qe(u16 index) { return qe_table[index].qe; }
-u8 ArithmeticDecoder::NMPS(u16 index) { return qe_table[index].nmps; }
-u8 ArithmeticDecoder::NLPS(u16 index) { return qe_table[index].nlps; }
-u8 ArithmeticDecoder::SWITCH(u16 index) { return qe_table[index].switch_flag; }
-
-u8 ArithmeticDecoder::B(size_t offset) const
-{
-    // E.2.10 Minimization of the compressed data
-    // "the convention is used in the decoder that when a marker code is encountered,
-    //  1-bits (without bit stuffing) are supplied to the decoder until the coding interval is complete."
-    if (BP + offset >= m_data.size())
-        return 0xFF;
-    return m_data[BP + offset];
-}
-
-void ArithmeticDecoder::INITDEC()
-{
-    // E.3.5 Initialization of the decoder (INITDEC)
-    // Figure G.1 – Initialization of the software conventions decoder
-
-    // "BP, the pointer to the compressed data, is initialized to BPST (pointing to the first compressed byte)."
-    auto const BPST = 0;
-    BP = BPST;
-    C = (B() ^ 0xFF) << 16;
-
-    BYTEIN();
-
-    C = C << 7;
-    CT = CT - 7;
-    A = 0x8000;
-}
-
-u8 ArithmeticDecoder::DECODE()
-{
-    // E.3.2 Decoding a decision (DECODE)
-    // Figure G.2 – Decoding an MPS or an LPS in the software-conventions decoder
-    u8 D;
-    A = A - Qe(I(CX));
-    if (C < ((u32)A << 16)) { // `(C_high < A)` in spec
-        if ((A & 0x8000) == 0) {
-            D = MPS_EXCHANGE();
-            RENORMD();
-        } else {
-            D = MPS(CX);
-        }
-    } else {
-        C = C - ((u32)A << 16); // `C_high = C_high - A` in spec
-        D = LPS_EXCHANGE();
-        RENORMD();
-    }
-    return D;
-}
-
-u8 ArithmeticDecoder::MPS_EXCHANGE()
-{
-    // Figure E.16 – Decoder MPS path conditional exchange procedure
-    u8 D;
-    if (A < Qe(I(CX))) {
-        D = 1 - MPS(CX);
-        if (SWITCH(I(CX)) == 1) {
-            MPS(CX) = 1 - MPS(CX);
-        }
-        I(CX) = NLPS(I(CX));
-    } else {
-        D = MPS(CX);
-        I(CX) = NMPS(I(CX));
-    }
-    return D;
-}
-
-u8 ArithmeticDecoder::LPS_EXCHANGE()
-{
-    // Figure E.17 – Decoder LPS path conditional exchange procedure
-    u8 D;
-    if (A < Qe(I(CX))) {
-        A = Qe(I(CX));
-        D = MPS(CX);
-        I(CX) = NMPS(I(CX));
-    } else {
-        A = Qe(I(CX));
-        D = 1 - MPS(CX);
-        if (SWITCH(I(CX)) == 1) {
-            MPS(CX) = 1 - MPS(CX);
-        }
-        I(CX) = NLPS(I(CX));
-    }
-    return D;
-}
-
-void ArithmeticDecoder::RENORMD()
-{
-    // E.3.3 Renormalization in the decoder (RENORMD)
-    // Figure E.18 – Decoder renormalization procedure
-    do {
-        if (CT == 0)
-            BYTEIN();
-        A = A << 1;
-        C = C << 1;
-        CT = CT - 1;
-    } while ((A & 0x8000) == 0);
-}
-
-void ArithmeticDecoder::BYTEIN()
-{
-    // E.3.4 Compressed data input (BYTEIN)
-    // Figure G.3 – Inserting a new byte into the C register in the software-conventions decoder
-    if (B() == 0xFF) {
-        if (B(1) > 0x8F) {
-            CT = 8;
-        } else {
-            BP = BP + 1;
-            C = C + 0xFE00 - (B() << 9);
-            CT = 7;
-        }
-    } else {
-        BP = BP + 1;
-        C = C + 0xFF00 - (B() << 8);
-        CT = 8;
-    }
-}
-
 // Annex A, Arithmetic integer decoding procedure
 class ArithmeticIntegerDecoder {
 public:
-    ArithmeticIntegerDecoder(ArithmeticDecoder&);
+    ArithmeticIntegerDecoder(QMArithmeticDecoder&);
 
     // A.2 Procedure for decoding values (except IAID)
     // Returns OptionalNone for OOB.
@@ -239,12 +43,12 @@ public:
     ErrorOr<i32> decode_non_oob();
 
 private:
-    ArithmeticDecoder& m_decoder;
+    QMArithmeticDecoder& m_decoder;
     u16 PREV { 0 };
-    Vector<ArithmeticDecoder::Context> contexts;
+    Vector<QMArithmeticDecoder::Context> contexts;
 };
 
-ArithmeticIntegerDecoder::ArithmeticIntegerDecoder(ArithmeticDecoder& decoder)
+ArithmeticIntegerDecoder::ArithmeticIntegerDecoder(QMArithmeticDecoder& decoder)
     : m_decoder(decoder)
 {
     contexts.resize(1 << 9);
@@ -314,18 +118,18 @@ ErrorOr<i32> ArithmeticIntegerDecoder::decode_non_oob()
 
 class ArithmeticIntegerIDDecoder {
 public:
-    ArithmeticIntegerIDDecoder(ArithmeticDecoder&, u32 code_length);
+    ArithmeticIntegerIDDecoder(QMArithmeticDecoder&, u32 code_length);
 
     // A.3 The IAID decoding procedure
     u32 decode();
 
 private:
-    ArithmeticDecoder& m_decoder;
+    QMArithmeticDecoder& m_decoder;
     u32 m_code_length { 0 };
-    Vector<ArithmeticDecoder::Context> contexts;
+    Vector<QMArithmeticDecoder::Context> contexts;
 };
 
-ArithmeticIntegerIDDecoder::ArithmeticIntegerIDDecoder(ArithmeticDecoder& decoder, u32 code_length)
+ArithmeticIntegerIDDecoder::ArithmeticIntegerIDDecoder(QMArithmeticDecoder& decoder, u32 code_length)
     : m_decoder(decoder)
     , m_code_length(code_length)
 {
@@ -416,6 +220,8 @@ public:
     void set_bit(size_t x, size_t y, bool b);
     void fill(bool b);
 
+    ErrorOr<NonnullOwnPtr<BitBuffer>> subbitmap(Gfx::IntRect const& rect) const;
+
     ErrorOr<NonnullRefPtr<Gfx::Bitmap>> to_gfx_bitmap() const;
     ErrorOr<ByteBuffer> to_byte_buffer() const;
 
@@ -433,7 +239,7 @@ private:
 
 ErrorOr<NonnullOwnPtr<BitBuffer>> BitBuffer::create(size_t width, size_t height)
 {
-    size_t pitch = ceil_div(width, 8ull);
+    size_t pitch = ceil_div(width, static_cast<size_t>(8));
     auto bits = TRY(ByteBuffer::create_uninitialized(pitch * height));
     return adopt_nonnull_own_or_enomem(new (nothrow) BitBuffer(move(bits), width, height, pitch));
 }
@@ -469,6 +275,23 @@ void BitBuffer::fill(bool b)
     u8 fill_byte = b ? 0xff : 0;
     for (auto& byte : m_bits.bytes())
         byte = fill_byte;
+}
+
+ErrorOr<NonnullOwnPtr<BitBuffer>> BitBuffer::subbitmap(Gfx::IntRect const& rect) const
+{
+    VERIFY(rect.x() >= 0);
+    VERIFY(rect.width() >= 0);
+    VERIFY(static_cast<size_t>(rect.right()) <= width());
+
+    VERIFY(rect.y() >= 0);
+    VERIFY(rect.height() >= 0);
+    VERIFY(static_cast<size_t>(rect.bottom()) <= height());
+
+    auto subbitmap = TRY(create(rect.width(), rect.height()));
+    for (int y = 0; y < rect.height(); ++y)
+        for (int x = 0; x < rect.width(); ++x)
+            subbitmap->set_bit(x, y, get_bit(rect.x() + x, rect.y() + y));
+    return subbitmap;
 }
 
 ErrorOr<NonnullRefPtr<Gfx::Bitmap>> BitBuffer::to_gfx_bitmap() const
@@ -520,6 +343,9 @@ struct SegmentData {
 
     // Set on dictionary segments after they've been decoded.
     Optional<Vector<NonnullRefPtr<Symbol>>> symbols;
+
+    // Set on pattern segments after they've been decoded.
+    Optional<Vector<NonnullRefPtr<Symbol>>> patterns;
 };
 
 // 7.4.8.5 Page segment flags
@@ -533,6 +359,9 @@ enum class CombinationOperator {
 
 static void composite_bitbuffer(BitBuffer& out, BitBuffer const& bitmap, Gfx::IntPoint position, CombinationOperator operator_)
 {
+    if (!IntRect { position, { bitmap.width(), bitmap.height() } }.intersects(IntRect { { 0, 0 }, { out.width(), out.height() } }))
+        return;
+
     size_t start_x = 0, end_x = bitmap.width();
     size_t start_y = 0, end_y = bitmap.height();
     if (position.x() < 0) {
@@ -777,7 +606,7 @@ static ErrorOr<void> decode_segment_headers(JBIG2LoadingContext& context, Readon
     if (segment_headers.size() != segment_datas.size())
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Segment headers and segment datas have different sizes");
     for (size_t i = 0; i < segment_headers.size(); ++i) {
-        context.segments.append({ segment_headers[i], segment_datas[i], {} });
+        context.segments.append({ segment_headers[i], segment_datas[i], {}, {} });
         context.segments_by_number.set(segment_headers[i].segment_number, context.segments.size() - 1);
     }
 
@@ -900,6 +729,17 @@ struct AdaptiveTemplatePixel {
     i8 y { 0 };
 };
 
+// Figure 7 – Field to which AT pixel locations are restricted
+static ErrorOr<void> check_valid_adaptive_template_pixel(AdaptiveTemplatePixel const& adaptive_template_pixel)
+{
+    // Don't have to check < -127 or > 127: The offsets are stored in an i8, so they can't be out of those bounds.
+    if (adaptive_template_pixel.y > 0)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Adaptive pixel y too big");
+    if (adaptive_template_pixel.y == 0 && adaptive_template_pixel.x > -1)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Adaptive pixel x too big");
+    return {};
+}
+
 // 6.2.2 Input parameters
 // Table 2 – Parameters for the generic region decoding procedure
 struct GenericRegionDecodingInputParameters {
@@ -909,17 +749,17 @@ struct GenericRegionDecodingInputParameters {
     u8 gb_template { 0 };
     bool is_typical_prediction_used { false };          // "TPGDON" in spec.
     bool is_extended_reference_template_used { false }; // "EXTTEMPLATE" in spec.
-    Optional<NonnullOwnPtr<BitBuffer>> skip_pattern;    // "USESKIP", "SKIP" in spec.
+    Optional<BitBuffer const&> skip_pattern;            // "USESKIP", "SKIP" in spec.
 
     Array<AdaptiveTemplatePixel, 12> adaptive_template_pixels; // "GBATX" / "GBATY" in spec.
     // FIXME: GBCOLS, GBCOMBOP, COLEXTFLAG
 
     // If is_modified_modified_read is false, generic_region_decoding_procedure() reads data off this decoder.
-    JBIG2::ArithmeticDecoder* arithmetic_decoder { nullptr };
+    QMArithmeticDecoder* arithmetic_decoder { nullptr };
 };
 
 // 6.2 Generic region decoding procedure
-static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(GenericRegionDecodingInputParameters const& inputs, ReadonlyBytes data, Vector<JBIG2::ArithmeticDecoder::Context>& contexts)
+static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(GenericRegionDecodingInputParameters const& inputs, ReadonlyBytes data, Vector<QMArithmeticDecoder::Context>& contexts)
 {
     if (inputs.is_modified_modified_read) {
         dbgln_if(JBIG2_DEBUG, "JBIG2ImageDecoderPlugin: MMR image data");
@@ -945,20 +785,9 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(Gener
     if (inputs.is_extended_reference_template_used)
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode EXTTEMPLATE yet");
 
-    if (inputs.gb_template == 0) {
-        if (inputs.adaptive_template_pixels[0].x != 3 || inputs.adaptive_template_pixels[0].y != -1
-            || inputs.adaptive_template_pixels[1].x != -3 || inputs.adaptive_template_pixels[1].y != -1
-            || inputs.adaptive_template_pixels[2].x != 2 || inputs.adaptive_template_pixels[2].y != -2
-            || inputs.adaptive_template_pixels[3].x != -2 || inputs.adaptive_template_pixels[3].y != -2)
-            return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot handle custom adaptive pixels yet");
-    } else if (inputs.gb_template == 1) {
-        if (inputs.adaptive_template_pixels[0].x != 3 || inputs.adaptive_template_pixels[0].y != -1)
-            return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot handle custom adaptive pixels yet");
-    } else {
-        VERIFY(inputs.gb_template == 2 || inputs.gb_template == 3);
-        if (inputs.adaptive_template_pixels[0].x != 2 || inputs.adaptive_template_pixels[0].y != -1)
-            return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot handle custom adaptive pixels yet");
-    }
+    int number_of_adaptive_template_pixels = inputs.gb_template == 0 ? 4 : 1;
+    for (int i = 0; i < number_of_adaptive_template_pixels; ++i)
+        TRY(check_valid_adaptive_template_pixel(inputs.adaptive_template_pixels[i]));
 
     if (inputs.skip_pattern.has_value())
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode USESKIP yet");
@@ -972,23 +801,26 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(Gener
     };
 
     // Figure 3(a) – Template when GBTEMPLATE = 0 and EXTTEMPLATE = 0,
-    constexpr auto compute_context_0 = [](NonnullOwnPtr<BitBuffer> const& buffer, int x, int y) -> u16 {
+    constexpr auto compute_context_0 = [](NonnullOwnPtr<BitBuffer> const& buffer, ReadonlySpan<AdaptiveTemplatePixel> adaptive_pixels, int x, int y) -> u16 {
         u16 result = 0;
+        for (int i = 0; i < 4; ++i)
+            result = (result << 1) | (u16)get_pixel(buffer, x + adaptive_pixels[i].x, y + adaptive_pixels[i].y);
+        for (int i = 0; i < 3; ++i)
+            result = (result << 1) | (u16)get_pixel(buffer, x - 1 + i, y - 2);
         for (int i = 0; i < 5; ++i)
-            result = (result << 1) | (u16)get_pixel(buffer, x - 2 + i, y - 2);
-        for (int i = 0; i < 7; ++i)
-            result = (result << 1) | (u16)get_pixel(buffer, x - 3 + i, y - 1);
+            result = (result << 1) | (u16)get_pixel(buffer, x - 2 + i, y - 1);
         for (int i = 0; i < 4; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 4 + i, y);
         return result;
     };
 
     // Figure 4 – Template when GBTEMPLATE = 1
-    auto compute_context_1 = [](NonnullOwnPtr<BitBuffer> const& buffer, int x, int y) -> u16 {
+    auto compute_context_1 = [](NonnullOwnPtr<BitBuffer> const& buffer, ReadonlySpan<AdaptiveTemplatePixel> adaptive_pixels, int x, int y) -> u16 {
         u16 result = 0;
+        result = (result << 1) | (u16)get_pixel(buffer, x + adaptive_pixels[0].x, y + adaptive_pixels[0].y);
         for (int i = 0; i < 4; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 1 + i, y - 2);
-        for (int i = 0; i < 6; ++i)
+        for (int i = 0; i < 5; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 2 + i, y - 1);
         for (int i = 0; i < 3; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 3 + i, y);
@@ -996,11 +828,12 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(Gener
     };
 
     // Figure 5 – Template when GBTEMPLATE = 2
-    auto compute_context_2 = [](NonnullOwnPtr<BitBuffer> const& buffer, int x, int y) -> u16 {
+    auto compute_context_2 = [](NonnullOwnPtr<BitBuffer> const& buffer, ReadonlySpan<AdaptiveTemplatePixel> adaptive_pixels, int x, int y) -> u16 {
         u16 result = 0;
+        result = (result << 1) | (u16)get_pixel(buffer, x + adaptive_pixels[0].x, y + adaptive_pixels[0].y);
         for (int i = 0; i < 3; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 1 + i, y - 2);
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 4; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 2 + i, y - 1);
         for (int i = 0; i < 2; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 2 + i, y);
@@ -1008,16 +841,17 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(Gener
     };
 
     // Figure 6 – Template when GBTEMPLATE = 3
-    auto compute_context_3 = [](NonnullOwnPtr<BitBuffer> const& buffer, int x, int y) -> u16 {
+    auto compute_context_3 = [](NonnullOwnPtr<BitBuffer> const& buffer, ReadonlySpan<AdaptiveTemplatePixel> adaptive_pixels, int x, int y) -> u16 {
         u16 result = 0;
-        for (int i = 0; i < 6; ++i)
+        result = (result << 1) | (u16)get_pixel(buffer, x + adaptive_pixels[0].x, y + adaptive_pixels[0].y);
+        for (int i = 0; i < 5; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 3 + i, y - 1);
         for (int i = 0; i < 4; ++i)
             result = (result << 1) | (u16)get_pixel(buffer, x - 4 + i, y);
         return result;
     };
 
-    u16 (*compute_context)(NonnullOwnPtr<BitBuffer> const&, int, int);
+    u16 (*compute_context)(NonnullOwnPtr<BitBuffer> const&, ReadonlySpan<AdaptiveTemplatePixel>, int, int);
     if (inputs.gb_template == 0)
         compute_context = compute_context_0;
     else if (inputs.gb_template == 1)
@@ -1061,7 +895,7 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(Gener
     }(inputs.gb_template);
 
     // 6.2.5.7 Decoding the bitmap
-    JBIG2::ArithmeticDecoder& decoder = *inputs.arithmetic_decoder;
+    QMArithmeticDecoder& decoder = *inputs.arithmetic_decoder;
     bool ltp = false; // "LTP" in spec. "Line (uses) Typical Prediction" maybe?
     for (size_t y = 0; y < inputs.region_height; ++y) {
         if (inputs.is_typical_prediction_used) {
@@ -1076,7 +910,7 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_region_decoding_procedure(Gener
         }
 
         for (size_t x = 0; x < inputs.region_width; ++x) {
-            u16 context = compute_context(result, x, y);
+            u16 context = compute_context(result, inputs.adaptive_template_pixels, x, y);
             bool bit = decoder.get_next_bit(contexts[context]);
             result->set_bit(x, y, bit);
         }
@@ -1099,7 +933,7 @@ struct GenericRefinementRegionDecodingInputParameters {
 };
 
 // 6.3 Generic Refinement Region Decoding Procedure
-static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_refinement_region_decoding_procedure(GenericRefinementRegionDecodingInputParameters& inputs, JBIG2::ArithmeticDecoder& decoder, Vector<JBIG2::ArithmeticDecoder::Context>& contexts)
+static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_refinement_region_decoding_procedure(GenericRefinementRegionDecodingInputParameters& inputs, QMArithmeticDecoder& decoder, Vector<QMArithmeticDecoder::Context>& contexts)
 {
     VERIFY(inputs.gr_template == 0 || inputs.gr_template == 1);
 
@@ -1107,9 +941,8 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_refinement_region_decoding_proc
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode typical prediction in generic refinement regions yet");
 
     if (inputs.gr_template == 0) {
-        if (inputs.adaptive_template_pixels[0].x != -1 || inputs.adaptive_template_pixels[0].y != -1
-            || inputs.adaptive_template_pixels[1].x != -1 || inputs.adaptive_template_pixels[1].y != -1)
-            return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot handle custom adaptive pixels in refinement regions yet");
+        TRY(check_valid_adaptive_template_pixel(inputs.adaptive_template_pixels[0]));
+        // inputs.adaptive_template_pixels[1] is allowed to contain any value.
     }
     // GRTEMPLATE 1 never uses adaptive pixels.
 
@@ -1121,22 +954,28 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_refinement_region_decoding_proc
     };
 
     // Figure 12 – 13-pixel refinement template showing the AT pixels at their nominal locations
-    constexpr auto compute_context_0 = [](BitBuffer const& reference, int reference_x, int reference_y, BitBuffer const& buffer, int x, int y) -> u16 {
+    constexpr auto compute_context_0 = [](ReadonlySpan<AdaptiveTemplatePixel> adaptive_pixels, BitBuffer const& reference, int reference_x, int reference_y, BitBuffer const& buffer, int x, int y) -> u16 {
         u16 result = 0;
 
-        for (int dy = -1; dy <= 1; ++dy)
-            for (int dx = -1; dx <= 1; ++dx)
-                result = (result << 1) | (u16)get_pixel(reference, reference_x + dx, reference_y + dy);
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (dy == -1 && dx == -1)
+                    result = (result << 1) | (u16)get_pixel(reference, reference_x + adaptive_pixels[1].x, reference_y + adaptive_pixels[1].y);
+                else
+                    result = (result << 1) | (u16)get_pixel(reference, reference_x + dx, reference_y + dy);
+            }
+        }
 
-        for (int i = 0; i < 3; ++i)
-            result = (result << 1) | (u16)get_pixel(buffer, x - 1 + i, y - 1);
+        result = (result << 1) | (u16)get_pixel(buffer, x + adaptive_pixels[0].x, y + adaptive_pixels[0].y);
+        for (int i = 0; i < 2; ++i)
+            result = (result << 1) | (u16)get_pixel(buffer, x + i, y - 1);
         result = (result << 1) | (u16)get_pixel(buffer, x - 1, y);
 
         return result;
     };
 
     // Figure 13 – 10-pixel refinement template
-    constexpr auto compute_context_1 = [](BitBuffer const& reference, int reference_x, int reference_y, BitBuffer const& buffer, int x, int y) -> u16 {
+    constexpr auto compute_context_1 = [](ReadonlySpan<AdaptiveTemplatePixel>, BitBuffer const& reference, int reference_x, int reference_y, BitBuffer const& buffer, int x, int y) -> u16 {
         u16 result = 0;
 
         for (int dy = -1; dy <= 1; ++dy) {
@@ -1160,7 +999,7 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> generic_refinement_region_decoding_proc
     auto result = TRY(BitBuffer::create(inputs.region_width, inputs.region_height));
     for (size_t y = 0; y < result->height(); ++y) {
         for (size_t x = 0; x < result->width(); ++x) {
-            u16 context = compute_context(*inputs.reference_bitmap, x - inputs.reference_x_offset, y - inputs.reference_y_offset, *result, x, y);
+            u16 context = compute_context(inputs.adaptive_template_pixels, *inputs.reference_bitmap, x - inputs.reference_x_offset, y - inputs.reference_y_offset, *result, x, y);
             bool bit = decoder.get_next_bit(contexts[context]);
             result->set_bit(x, y, bit);
         }
@@ -1211,7 +1050,7 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> text_region_decoding_procedure(TextRegi
     if (inputs.uses_huffman_encoding)
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode huffman text regions yet");
 
-    auto decoder = TRY(JBIG2::ArithmeticDecoder::initialize(data));
+    auto decoder = TRY(QMArithmeticDecoder::initialize(data));
 
     // 6.4.6 Strip delta T
     // "If SBHUFF is 1, decode a value using the Huffman table specified by SBHUFFDT and multiply the resulting value by SBSTRIPS.
@@ -1291,7 +1130,7 @@ static ErrorOr<NonnullOwnPtr<BitBuffer>> text_region_decoding_procedure(TextRegi
 
     // 6.4.11 Symbol instance bitmap
     JBIG2::ArithmeticIntegerDecoder has_refinement_image_decoder(decoder);
-    Vector<JBIG2::ArithmeticDecoder::Context> refinement_contexts;
+    Vector<QMArithmeticDecoder::Context> refinement_contexts;
     if (inputs.uses_refinement_coding)
         refinement_contexts.resize(1 << (inputs.refinement_template == 0 ? 13 : 10));
     OwnPtr<BitBuffer> refinement_result;
@@ -1505,8 +1344,8 @@ static ErrorOr<Vector<NonnullRefPtr<Symbol>>> symbol_dictionary_decoding_procedu
     if (inputs.uses_huffman_encoding)
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode huffman symbol dictionaries yet");
 
-    auto decoder = TRY(JBIG2::ArithmeticDecoder::initialize(data));
-    Vector<JBIG2::ArithmeticDecoder::Context> contexts;
+    auto decoder = TRY(QMArithmeticDecoder::initialize(data));
+    Vector<QMArithmeticDecoder::Context> contexts;
     contexts.resize(1 << number_of_context_bits_for_template(inputs.symbol_template));
 
     // 6.5.6 Height class delta height
@@ -1550,7 +1389,7 @@ static ErrorOr<Vector<NonnullRefPtr<Symbol>>> symbol_dictionary_decoding_procedu
 
     // FIXME: When we implement REFAGGNINST > 1 support, do these need to be shared with
     // text_region_decoding_procedure() then?
-    Vector<JBIG2::ArithmeticDecoder::Context> refinement_contexts;
+    Vector<QMArithmeticDecoder::Context> refinement_contexts;
 
     // This belongs in 6.5.5 1) below, but also needs to be captured by read_bitmap here.
     Vector<NonnullRefPtr<Symbol>> new_symbols;
@@ -1753,6 +1592,274 @@ static ErrorOr<Vector<NonnullRefPtr<Symbol>>> symbol_dictionary_decoding_procedu
         return Error::from_string_literal("JBIG2ImageDecoderPlugin: Unexpected number of exported symbols");
 
     return exported_symbols;
+}
+
+// Annex C Gray-scale image decoding procedure
+
+// C.2 Input parameters
+// Table C.1 – Parameters for the gray-scale image decoding procedure
+struct GrayscaleInputParameters {
+    bool uses_mmr { false }; // "GSMMR" in spec.
+
+    Optional<BitBuffer const&> skip_pattern; // "GSUSESKIP" / "GSKIP" in spec.
+
+    u8 bpp { 0 };         // "GSBPP" in spec.
+    u32 width { 0 };      // "GSW" in spec.
+    u32 height { 0 };     // "GSH" in spec.
+    u8 template_id { 0 }; // "GSTEMPLATE" in spec.
+
+    // If uses_mmr is false, grayscale_image_decoding_procedure() reads data off this decoder.
+    QMArithmeticDecoder* arithmetic_decoder { nullptr };
+};
+
+static ErrorOr<Vector<u8>> grayscale_image_decoding_procedure(GrayscaleInputParameters const& inputs, ReadonlyBytes data, Vector<QMArithmeticDecoder::Context>& contexts)
+{
+    // FIXME: Support this. generic_region_decoding_procedure() currently doesn't tell us how much data it
+    //        reads for MMR bitmaps, so we can't currently read more than one MMR bitplane here.
+    if (inputs.uses_mmr)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode MMR grayscale images yet");
+
+    // Table C.4 – Parameters used to decode a bitplane of the gray-scale image
+    GenericRegionDecodingInputParameters generic_inputs;
+    generic_inputs.is_modified_modified_read = inputs.uses_mmr;
+    generic_inputs.region_width = inputs.width;
+    generic_inputs.region_height = inputs.height;
+    generic_inputs.gb_template = inputs.template_id;
+    generic_inputs.is_typical_prediction_used = false;
+    generic_inputs.is_extended_reference_template_used = false; // Missing from spec.
+    generic_inputs.skip_pattern = inputs.skip_pattern;
+    generic_inputs.adaptive_template_pixels[0].x = inputs.template_id <= 1 ? 3 : 2;
+    generic_inputs.adaptive_template_pixels[0].y = -1;
+    generic_inputs.adaptive_template_pixels[1].x = -3;
+    generic_inputs.adaptive_template_pixels[1].y = -1;
+    generic_inputs.adaptive_template_pixels[2].x = 2;
+    generic_inputs.adaptive_template_pixels[2].y = -2;
+    generic_inputs.adaptive_template_pixels[3].x = -2;
+    generic_inputs.adaptive_template_pixels[3].y = -2;
+    generic_inputs.arithmetic_decoder = inputs.arithmetic_decoder;
+
+    // C.5 Decoding the gray-scale image
+    // "The gray-scale image is obtained by decoding GSBPP bitplanes. These bitplanes are denoted (from least significant to
+    //  most significant) GSPLANES[0], GSPLANES[1], . . . , GSPLANES[GSBPP – 1]. The bitplanes are Gray-coded, so
+    //  that each bitplane's true value is equal to its coded value XORed with the next-more-significant bitplane."
+    Vector<OwnPtr<BitBuffer>> bitplanes;
+    bitplanes.resize(inputs.bpp);
+
+    // "1) Decode GSPLANES[GSBPP – 1] using the generic region decoding procedure. The parameters to the
+    //     generic region decoding procedure are as shown in Table C.4."
+    bitplanes[inputs.bpp - 1] = TRY(generic_region_decoding_procedure(generic_inputs, data, contexts));
+
+    // "2) Set J = GSBPP – 2."
+    int j = inputs.bpp - 2;
+
+    // "3) While J >= 0, perform the following steps:"
+    while (j >= 0) {
+        // "a) Decode GSPLANES[J] using the generic region decoding procedure. The parameters to the generic
+        //     region decoding procedure are as shown in Table C.4."
+        bitplanes[j] = TRY(generic_region_decoding_procedure(generic_inputs, data, contexts));
+
+        // "b) For each pixel (x, y) in GSPLANES[J], set:
+        //     GSPLANES[J][x, y] = GSPLANES[J + 1][x, y] XOR GSPLANES[J][x, y]"
+        for (u32 y = 0; y < inputs.height; ++y) {
+            for (u32 x = 0; x < inputs.width; ++x) {
+                bool bit = bitplanes[j + 1]->get_bit(x, y) ^ bitplanes[j]->get_bit(x, y);
+                bitplanes[j]->set_bit(x, y, bit);
+            }
+        }
+
+        // "c) Set J = J – 1."
+        j = j - 1;
+    }
+
+    // "4) For each (x, y), set:
+    //     GSVALS [x, y] = sum_{J = 0}^{GSBPP - 1} GSPLANES[J][x,y] × 2**J)"
+    Vector<u8> result;
+    result.resize(inputs.width * inputs.height);
+    for (u32 y = 0; y < inputs.height; ++y) {
+        for (u32 x = 0; x < inputs.width; ++x) {
+            u8 value = 0;
+            for (int j = 0; j < inputs.bpp; ++j) {
+                if (bitplanes[j]->get_bit(x, y))
+                    value |= 1 << j;
+            }
+            result[y * inputs.width + x] = value;
+        }
+    }
+    return result;
+}
+
+// 6.6.2 Input parameters
+// Table 20 – Parameters for the halftone region decoding procedure
+struct HalftoneRegionDecodingInputParameters {
+    u32 region_width { 0 };                                               // "HBW" in spec.
+    u32 region_height { 0 };                                              // "HBH" in spec.
+    bool uses_mmr { false };                                              // "HMMR" in spec.
+    u8 halftone_template { 0 };                                           // "HTEMPLATE" in spec.
+    Vector<NonnullRefPtr<Symbol>> patterns;                               // "HNUMPATS" / "HPATS" in spec.
+    bool default_pixel_value { false };                                   // "HDEFPIXEL" in spec.
+    CombinationOperator combination_operator { CombinationOperator::Or }; // "HCOMBOP" in spec.
+    bool enable_skip { false };                                           // "HENABLESKIP" in spec.
+    u32 grayscale_width { 0 };                                            // "HGW" in spec.
+    u32 grayscale_height { 0 };                                           // "HGH" in spec.
+    i32 grid_origin_x_offset { 0 };                                       // "HGX" in spec.
+    i32 grid_origin_y_offset { 0 };                                       // "HGY" in spec.
+    u16 grid_vector_x { 0 };                                              // "HRY" in spec.
+    u16 grid_vector_y { 0 };                                              // "HRX" in spec.
+    u8 pattern_width { 0 };                                               // "HPW" in spec.
+    u8 pattern_height { 0 };                                              // "HPH" in spec.
+};
+
+// 6.6 Halftone Region Decoding Procedure
+static ErrorOr<NonnullOwnPtr<BitBuffer>> halftone_region_decoding_procedure(HalftoneRegionDecodingInputParameters const& inputs, ReadonlyBytes data, Vector<QMArithmeticDecoder::Context>& contexts)
+{
+    // 6.6.5 Decoding the halftone region
+    // "1) Fill a bitmap HTREG, of the size given by HBW and HBH, with the HDEFPIXEL value."
+    auto result = TRY(BitBuffer::create(inputs.region_width, inputs.region_height));
+    result->fill(inputs.default_pixel_value);
+
+    // "2) If HENABLESKIP equals 1, compute a bitmap HSKIP as shown in 6.6.5.1."
+    Optional<BitBuffer const&> skip_pattern;
+    OwnPtr<BitBuffer> skip_pattern_storage;
+    if (inputs.enable_skip) {
+        // FIXME: This is untested; I haven't found a sample that uses HENABLESKIP yet.
+        //        But generic_region_decoding_procedure() currently doesn't implement skip_pattern anyways
+        //        and errors out on it, so we'll notice when this gets hit.
+        skip_pattern_storage = TRY(BitBuffer::create(inputs.pattern_width, inputs.pattern_height));
+        skip_pattern = *skip_pattern_storage;
+
+        // 6.6.5.1 Computing HSKIP
+        // "1) For each value of mg between 0 and HGH – 1, beginning from 0, perform the following steps:"
+        for (int m_g = 0; m_g < (int)inputs.grayscale_height; ++m_g) {
+            // "a) For each value of ng between 0 and HGW – 1, beginning from 0, perform the following steps:"
+            for (int n_g = 0; n_g < (int)inputs.grayscale_width; ++n_g) {
+                // "i) Set:
+                //      x = (HGX + m_g × HRY + n_g × HRX) >> 8
+                //      y = (HGY + m_g × HRX – n_g × HRY) >> 8"
+                auto x = (inputs.grid_origin_x_offset + m_g * inputs.grid_vector_y + n_g * inputs.grid_vector_x) >> 8;
+                auto y = (inputs.grid_origin_y_offset + m_g * inputs.grid_vector_x - n_g * inputs.grid_vector_y) >> 8;
+
+                // "ii) If ((x + HPW <= 0) OR (x >= HBW) OR (y + HPH <= 0) OR (y >= HBH)) then set:
+                //          HSKIP[n_g, m_g] = 1
+                //      Otherwise, set:
+                //          HSKIP[n_g, m_g] = 0"
+                if (x + inputs.pattern_width <= 0 || x >= (int)inputs.region_width || y + inputs.pattern_height <= 0 || y >= (int)inputs.region_height)
+                    skip_pattern_storage->set_bit(n_g, m_g, true);
+                else
+                    skip_pattern_storage->set_bit(n_g, m_g, false);
+            }
+        }
+    }
+
+    // "3) Set HBPP to ⌈log2 (HNUMPATS)⌉."
+    u8 bits_per_pattern = ceil(log2(inputs.patterns.size()));
+
+    // "4) Decode an image GI of size HGW by HGH with HBPP bits per pixel using the gray-scale image decoding
+    //     procedure as described in Annex C. Set the parameters to this decoding procedure as shown in Table 23.
+    //     Let GI be the results of invoking this decoding procedure."
+    GrayscaleInputParameters grayscale_inputs;
+    grayscale_inputs.uses_mmr = inputs.uses_mmr;
+    grayscale_inputs.width = inputs.grayscale_width;
+    grayscale_inputs.height = inputs.grayscale_height;
+    grayscale_inputs.bpp = bits_per_pattern;
+    grayscale_inputs.skip_pattern = skip_pattern;
+    grayscale_inputs.template_id = inputs.halftone_template;
+
+    Optional<QMArithmeticDecoder> decoder;
+    if (!inputs.uses_mmr) {
+        decoder = TRY(QMArithmeticDecoder::initialize(data));
+        grayscale_inputs.arithmetic_decoder = &decoder.value();
+    }
+
+    auto grayscale_image = TRY(grayscale_image_decoding_procedure(grayscale_inputs, data, contexts));
+
+    // "5) Place sequentially the patterns corresponding to the values in GI into HTREG by the procedure described in 6.6.5.2.
+    //     The rendering procedure is illustrated in Figure 26. The outline of two patterns are marked by dotted boxes."
+    {
+        // 6.6.5.2 Rendering the patterns
+        // "Draw the patterns into HTREG using the following procedure:
+        //  1) For each value of m_g between 0 and HGH – 1, beginning from 0, perform the following steps."
+        for (int m_g = 0; m_g < (int)inputs.grayscale_height; ++m_g) {
+            // "a) For each value of n_g between 0 and HGW – 1, beginning from 0, perform the following steps."
+            for (int n_g = 0; n_g < (int)inputs.grayscale_width; ++n_g) {
+                // "i) Set:
+                //      x = (HGX + m_g × HRY + n_g × HRX) >> 8
+                //      y = (HGY + m_g × HRX – n_g × HRY) >> 8"
+                auto x = (inputs.grid_origin_x_offset + m_g * inputs.grid_vector_y + n_g * inputs.grid_vector_x) >> 8;
+                auto y = (inputs.grid_origin_y_offset + m_g * inputs.grid_vector_x - n_g * inputs.grid_vector_y) >> 8;
+
+                // "ii) Draw the pattern HPATS[GI[n_g, m_g]] into HTREG such that its upper left pixel is at location (x, y) in HTREG.
+                //
+                //      A pattern is drawn into HTREG as follows. Each pixel of the pattern shall be combined with
+                //      the current value of the corresponding pixel in the halftone-coded bitmap, using the
+                //      combination operator specified by HCOMBOP. The results of each combination shall be
+                //      written into that pixel in the halftone-coded bitmap.
+                //
+                //      If any part of a decoded pattern, when placed at location (x, y) lies outside the actual halftone-
+                //      coded bitmap, then this part of the pattern shall be ignored in the process of combining the
+                //      pattern with the bitmap."
+                u8 grayscale_value = grayscale_image[n_g + m_g * inputs.grayscale_width];
+                if (grayscale_value >= inputs.patterns.size())
+                    return Error::from_string_literal("JBIG2ImageDecoderPlugin: Grayscale value out of range");
+                auto const& pattern = inputs.patterns[grayscale_value];
+                composite_bitbuffer(*result, pattern->bitmap(), { x, y }, inputs.combination_operator);
+            }
+        }
+    }
+
+    // "6) After all the patterns have been placed on the bitmap, the current contents of the halftone-coded bitmap are
+    //     the results that shall be obtained by every decoder, whether it performs this exact sequence of steps or not."
+    return result;
+}
+
+// 6.7.2 Input parameters
+// Table 24 – Parameters for the pattern dictionary decoding procedure
+struct PatternDictionaryDecodingInputParameters {
+    bool uses_mmr { false }; // "HDMMR" in spec.
+    u32 width { 0 };         // "HDPW" in spec.
+    u32 height { 0 };        // "HDPH" in spec.
+    u32 gray_max { 0 };      // "GRAYMAX" in spec.
+    u8 hd_template { 0 };    // "HDTEMPLATE" in spec.
+};
+
+// 6.7 Pattern Dictionary Decoding Procedure
+static ErrorOr<Vector<NonnullRefPtr<Symbol>>> pattern_dictionary_decoding_procedure(PatternDictionaryDecodingInputParameters const& inputs, ReadonlyBytes data, Vector<QMArithmeticDecoder::Context>& contexts)
+{
+    // Table 27 – Parameters used to decode a pattern dictionary's collective bitmap
+    GenericRegionDecodingInputParameters generic_inputs;
+    generic_inputs.is_modified_modified_read = inputs.uses_mmr;
+    generic_inputs.region_width = (inputs.gray_max + 1) * inputs.width;
+    generic_inputs.region_height = inputs.height;
+    generic_inputs.gb_template = inputs.hd_template;
+    generic_inputs.is_typical_prediction_used = false;
+    generic_inputs.is_extended_reference_template_used = false; // Missing from spec in table 27.
+    generic_inputs.skip_pattern = OptionalNone {};
+    generic_inputs.adaptive_template_pixels[0].x = -inputs.width;
+    generic_inputs.adaptive_template_pixels[0].y = 0;
+    generic_inputs.adaptive_template_pixels[1].x = -3;
+    generic_inputs.adaptive_template_pixels[1].y = -1;
+    generic_inputs.adaptive_template_pixels[2].x = 2;
+    generic_inputs.adaptive_template_pixels[2].y = -2;
+    generic_inputs.adaptive_template_pixels[3].x = -2;
+    generic_inputs.adaptive_template_pixels[3].y = -2;
+
+    Optional<QMArithmeticDecoder> decoder;
+    if (!inputs.uses_mmr) {
+        decoder = TRY(QMArithmeticDecoder::initialize(data));
+        generic_inputs.arithmetic_decoder = &decoder.value();
+    }
+
+    auto bitmap = TRY(generic_region_decoding_procedure(generic_inputs, data, contexts));
+
+    Vector<NonnullRefPtr<Symbol>> patterns;
+    for (u32 gray = 0; gray <= inputs.gray_max; ++gray) {
+        int x = gray * inputs.width;
+        auto pattern = TRY(bitmap->subbitmap({ x, 0, static_cast<int>(inputs.width), static_cast<int>(inputs.height) }));
+        patterns.append(Symbol::create(move(pattern)));
+    }
+
+    dbgln_if(JBIG2_DEBUG, "Pattern dictionary: {} patterns", patterns.size());
+
+    return patterns;
 }
 
 static ErrorOr<void> decode_symbol_dictionary(JBIG2LoadingContext& context, SegmentData& segment)
@@ -2015,9 +2122,58 @@ static ErrorOr<void> decode_immediate_text_region(JBIG2LoadingContext& context, 
     return {};
 }
 
-static ErrorOr<void> decode_pattern_dictionary(JBIG2LoadingContext&, SegmentData const&)
+static ErrorOr<void> decode_pattern_dictionary(JBIG2LoadingContext&, SegmentData& segment)
 {
-    return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode pattern dictionary yet");
+    // 7.4.4 Pattern dictionary segment syntax
+    FixedMemoryStream stream(segment.data);
+
+    // 7.4.4.1.1 Pattern dictionary flags
+    u8 flags = TRY(stream.read_value<u8>());
+    bool uses_mmr = flags & 1;
+    u8 hd_template = (flags >> 1) & 3;
+    if (uses_mmr && hd_template != 0)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Invalid hd_template");
+    if (flags & 0b1111'1000)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Invalid flags");
+
+    // 7.4.4.1.2 Width of the patterns in the pattern dictionary (HDPW)
+    u8 width = TRY(stream.read_value<u8>());
+    if (width == 0)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Invalid width");
+
+    // 7.4.4.1.3 Height of the patterns in the pattern dictionary (HDPH)
+    u8 height = TRY(stream.read_value<u8>());
+    if (height == 0)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Invalid height");
+
+    // 7.4.4.1.4 Largest gray-scale value (GRAYMAX)
+    u32 gray_max = TRY(stream.read_value<BigEndian<u32>>());
+
+    // 7.4.4.2 Decoding a pattern dictionary segment
+    dbgln_if(JBIG2_DEBUG, "Pattern dictionary: uses_mmr={}, hd_template={}, width={}, height={}, gray_max={}", uses_mmr, hd_template, width, height, gray_max);
+    auto data = segment.data.slice(TRY(stream.tell()));
+
+    // "1) Interpret its header, as described in 7.4.4.1."
+    // Done!
+
+    // "2) As described in E.3.7, reset all the arithmetic coding statistics to zero."
+    Vector<QMArithmeticDecoder::Context> contexts;
+    if (!uses_mmr)
+        contexts.resize(1 << number_of_context_bits_for_template(hd_template));
+
+    // "3) Invoke the pattern dictionary decoding procedure described in 6.7, with the parameters to the pattern
+    //     dictionary decoding procedure set as shown in Table 35."
+    PatternDictionaryDecodingInputParameters inputs;
+    inputs.uses_mmr = uses_mmr;
+    inputs.width = width;
+    inputs.height = height;
+    inputs.gray_max = gray_max;
+    inputs.hd_template = hd_template;
+    auto result = TRY(pattern_dictionary_decoding_procedure(inputs, data, contexts));
+
+    segment.patterns = move(result);
+
+    return {};
 }
 
 static ErrorOr<void> decode_intermediate_halftone_region(JBIG2LoadingContext&, SegmentData const&)
@@ -2025,9 +2181,101 @@ static ErrorOr<void> decode_intermediate_halftone_region(JBIG2LoadingContext&, S
     return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode intermediate halftone region yet");
 }
 
-static ErrorOr<void> decode_immediate_halftone_region(JBIG2LoadingContext&, SegmentData const&)
+static ErrorOr<void> decode_immediate_halftone_region(JBIG2LoadingContext& context, SegmentData const& segment)
 {
-    return Error::from_string_literal("JBIG2ImageDecoderPlugin: Cannot decode immediate halftone region yet");
+    // 7.4.5 Halftone region segment syntax
+    auto data = segment.data;
+    auto information_field = TRY(decode_region_segment_information_field(data));
+    data = data.slice(sizeof(information_field));
+
+    dbgln_if(JBIG2_DEBUG, "Halftone region: width={}, height={}, x={}, y={}, flags={:#x}", information_field.width, information_field.height, information_field.x_location, information_field.y_location, information_field.flags);
+
+    FixedMemoryStream stream(data);
+
+    // 7.4.5.1.1 Halftone region segment flags
+    u8 flags = TRY(stream.read_value<u8>());
+    bool uses_mmr = flags & 1;           // "HMMR" in spec.
+    u8 template_used = (flags >> 1) & 3; // "HTTEMPLATE" in spec.
+    if (uses_mmr && template_used != 0)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Invalid template_used");
+    bool enable_skip = (flags >> 3) & 1;        // "HENABLESKIP" in spec.
+    u8 combination_operator = (flags >> 4) & 7; // "HCOMBOP" in spec.
+    if (combination_operator > 4)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Invalid combination_operator");
+    bool default_pixel_value = (flags >> 7) & 1; // "HDEFPIXEL" in spec.
+
+    dbgln_if(JBIG2_DEBUG, "Halftone region: uses_mmr={}, template_used={}, enable_skip={}, combination_operator={}, default_pixel_value={}", uses_mmr, template_used, enable_skip, combination_operator, default_pixel_value);
+
+    // 7.4.5.1.2 Halftone grid position and size
+    // 7.4.5.1.2.1 Width of the gray-scale image (HGW)
+    u32 gray_width = TRY(stream.read_value<BigEndian<u32>>());
+
+    // 7.4.5.1.2.2 Height of the gray-scale image (HGH)
+    u32 gray_height = TRY(stream.read_value<BigEndian<u32>>());
+
+    // 7.4.5.1.2.3 Horizontal offset of the grid (HGX)
+    i32 grid_x = TRY(stream.read_value<BigEndian<i32>>());
+
+    // 7.4.5.1.2.4 Vertical offset of the grid (HGY)
+    i32 grid_y = TRY(stream.read_value<BigEndian<i32>>());
+
+    // 7.4.5.1.3 Halftone grid vector
+    // 7.4.5.1.3.1 Horizontal coordinate of the halftone grid vector (HRX)
+    u16 grid_vector_x = TRY(stream.read_value<BigEndian<u16>>());
+
+    // 7.4.5.1.3.2 Vertical coordinate of the halftone grid vector (HRY)
+    u16 grid_vector_y = TRY(stream.read_value<BigEndian<u16>>());
+
+    dbgln_if(JBIG2_DEBUG, "Halftone region: gray_width={}, gray_height={}, grid_x={}, grid_y={}, grid_vector_x={}, grid_vector_y={}", gray_width, gray_height, grid_x, grid_y, grid_vector_x, grid_vector_y);
+
+    // 7.4.5.2 Decoding a halftone region segment
+    // "1) Interpret its header, as described in 7.4.5.1."
+    // Done!
+
+    // "2) Decode (or retrieve the results of decoding) the referred-to pattern dictionary segment."
+    if (segment.header.referred_to_segment_numbers.size() != 1)
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Halftone segment refers to wrong number of segments");
+    auto opt_referred_to_segment = context.segments_by_number.get(segment.header.referred_to_segment_numbers[0]);
+    if (!opt_referred_to_segment.has_value())
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Halftone segment refers to non-existent segment");
+    dbgln_if(JBIG2_DEBUG, "Halftone segment refers to segment id {} index {}", segment.header.referred_to_segment_numbers[0], opt_referred_to_segment.value());
+    auto const& referred_to_segment = context.segments[opt_referred_to_segment.value()];
+    if (!referred_to_segment.patterns.has_value())
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Halftone segment referred-to segment without patterns");
+    Vector<NonnullRefPtr<Symbol>> patterns = referred_to_segment.patterns.value();
+    if (patterns.is_empty())
+        return Error::from_string_literal("JBIG2ImageDecoderPlugin: Halftone segment without patterns");
+
+    // "3) As described in E.3.7, reset all the arithmetic coding statistics to zero."
+    Vector<QMArithmeticDecoder::Context> contexts;
+    if (!uses_mmr)
+        contexts.resize(1 << number_of_context_bits_for_template(template_used));
+
+    // "4) Invoke the halftone region decoding procedure described in 6.6, with the parameters to the halftone
+    //     region decoding procedure set as shown in Table 36."
+    data = data.slice(TRY(stream.tell()));
+    HalftoneRegionDecodingInputParameters inputs;
+    inputs.region_width = information_field.width;
+    inputs.region_height = information_field.height;
+    inputs.uses_mmr = uses_mmr;
+    inputs.halftone_template = template_used;
+    inputs.enable_skip = enable_skip;
+    inputs.combination_operator = static_cast<CombinationOperator>(combination_operator);
+    inputs.default_pixel_value = default_pixel_value;
+    inputs.grayscale_width = gray_width;
+    inputs.grayscale_height = gray_height;
+    inputs.grid_origin_x_offset = grid_x;
+    inputs.grid_origin_y_offset = grid_y;
+    inputs.grid_vector_x = grid_vector_x;
+    inputs.grid_vector_y = grid_vector_y;
+    inputs.patterns = move(patterns);
+    inputs.pattern_width = inputs.patterns[0]->bitmap().width();
+    inputs.pattern_height = inputs.patterns[0]->bitmap().height();
+    auto result = TRY(halftone_region_decoding_procedure(inputs, data, contexts));
+
+    composite_bitbuffer(*context.page.bits, *result, { information_field.x_location, information_field.y_location }, information_field.external_combination_operator());
+
+    return {};
 }
 
 static ErrorOr<void> decode_immediate_lossless_halftone_region(JBIG2LoadingContext&, SegmentData const&)
@@ -2087,7 +2335,7 @@ static ErrorOr<void> decode_immediate_generic_region(JBIG2LoadingContext& contex
     // "1) Interpret its header, as described in 7.4.6.1"
     // Done above.
     // "2) As described in E.3.7, reset all the arithmetic coding statistics to zero."
-    Vector<JBIG2::ArithmeticDecoder::Context> contexts;
+    Vector<QMArithmeticDecoder::Context> contexts;
     contexts.resize(1 << number_of_context_bits_for_template(arithmetic_coding_template));
 
     // "3) Invoke the generic region decoding procedure described in 6.2, with the parameters to the generic region decoding procedure set as shown in Table 37."
@@ -2101,9 +2349,9 @@ static ErrorOr<void> decode_immediate_generic_region(JBIG2LoadingContext& contex
     inputs.skip_pattern = OptionalNone {};
     inputs.adaptive_template_pixels = adaptive_template_pixels;
 
-    Optional<JBIG2::ArithmeticDecoder> decoder;
+    Optional<QMArithmeticDecoder> decoder;
     if (!uses_mmr) {
-        decoder = TRY(JBIG2::ArithmeticDecoder::initialize(data));
+        decoder = TRY(QMArithmeticDecoder::initialize(data));
         inputs.arithmetic_decoder = &decoder.value();
     }
 
@@ -2249,8 +2497,8 @@ static ErrorOr<void> decode_extension(JBIG2LoadingContext&, SegmentData const& s
 
             auto second_bytes = TRY(read_string.template operator()<u8>());
 
-            auto first = TRY(TextCodec::decoder_for("ISO-8859-1"sv)->to_utf8(StringView { first_bytes }));
-            auto second = TRY(TextCodec::decoder_for("ISO-8859-1"sv)->to_utf8(StringView { second_bytes }));
+            auto first = TRY(TextCodec::decoder_for_exact_name("ISO-8859-1"sv)->to_utf8(StringView { first_bytes }));
+            auto second = TRY(TextCodec::decoder_for_exact_name("ISO-8859-1"sv)->to_utf8(StringView { second_bytes }));
             dbgln("JBIG2ImageDecoderPlugin: key '{}', value '{}'", first, second);
         }
         if (!stream.is_eof())
@@ -2378,6 +2626,8 @@ JBIG2ImageDecoderPlugin::JBIG2ImageDecoderPlugin()
 {
     m_context = make<JBIG2LoadingContext>();
 }
+
+JBIG2ImageDecoderPlugin::~JBIG2ImageDecoderPlugin() = default;
 
 IntSize JBIG2ImageDecoderPlugin::size()
 {

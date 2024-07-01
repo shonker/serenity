@@ -18,6 +18,9 @@
 #include <Kernel/API/POSIX/select.h>
 #include <Kernel/API/POSIX/sys/resource.h>
 #include <Kernel/API/Syscall.h>
+#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
+#    include <Kernel/Devices/KCOVInstance.h>
+#endif
 #include <Kernel/FileSystem/InodeMetadata.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/UnveilNode.h>
@@ -140,6 +143,7 @@ class Process final
         Atomic<u32> thread_count { 0 };
         u8 termination_status { 0 };
         u8 termination_signal { 0 };
+        SetOnce reject_transition_to_executable_from_writable_prot;
     };
 
 public:
@@ -222,7 +226,19 @@ public:
     bool is_profiling() const { return m_profiling; }
     void set_profiling(bool profiling) { m_profiling = profiling; }
 
-    bool should_generate_coredump() const { return m_should_generate_coredump; }
+#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
+    NO_SANITIZE_COVERAGE KCOVInstance* kcov_instance()
+    {
+        return m_kcov_instance;
+    }
+    void set_kcov_instance(KCOVInstance* kcov_instance) { m_kcov_instance = kcov_instance; }
+    static bool is_kcov_busy();
+#endif
+
+    bool should_generate_coredump() const
+    {
+        return m_should_generate_coredump;
+    }
     void set_should_generate_coredump(bool b) { m_should_generate_coredump = b; }
 
     bool is_dying() const { return m_state.load(AK::MemoryOrder::memory_order_acquire) != State::Running; }
@@ -456,7 +472,6 @@ public:
     ErrorOr<FlatPtr> sys$recvfd(int sockfd, int options);
     ErrorOr<FlatPtr> sys$sysconf(int name);
     ErrorOr<FlatPtr> sys$disown(ProcessID);
-    ErrorOr<FlatPtr> sys$allocate_tls(Userspace<char const*> initial_data, size_t);
     ErrorOr<FlatPtr> sys$prctl(int option, FlatPtr arg1, FlatPtr arg2, FlatPtr arg3);
     ErrorOr<FlatPtr> sys$anon_create(size_t, int options);
     ErrorOr<FlatPtr> sys$statvfs(Userspace<Syscall::SC_statvfs_params const*> user_params);
@@ -467,6 +482,7 @@ public:
     ErrorOr<FlatPtr> sys$get_root_session_id(pid_t force_sid);
     ErrorOr<FlatPtr> sys$remount(Userspace<Syscall::SC_remount_params const*> user_params);
     ErrorOr<FlatPtr> sys$bindmount(Userspace<Syscall::SC_bindmount_params const*> user_params);
+    ErrorOr<FlatPtr> sys$archctl(int option, FlatPtr arg1);
 
     enum SockOrPeerName {
         SockName,
@@ -608,6 +624,13 @@ public:
 
     ErrorOr<void> require_promise(Pledge);
     ErrorOr<void> require_no_promises() const;
+
+    bool should_reject_transition_to_executable_from_writable_prot() const
+    {
+        return with_protected_data([](auto& protected_data) {
+            return protected_data.reject_transition_to_executable_from_writable_prot.was_set();
+        });
+    }
 
     ErrorOr<void> validate_mmap_prot(int prot, bool map_stack, bool map_anonymous, Memory::Region const* region = nullptr) const;
     ErrorOr<void> validate_inode_mmap_prot(int prot, bool description_readable, bool description_writable, bool map_shared) const;
@@ -896,6 +919,8 @@ public:
         return m_fds.with_exclusive([](auto& fds) { return fds.allocate(); });
     }
 
+    ErrorOr<NonnullRefPtr<Custody>> custody_for_dirfd(Badge<CustodyBase>, int dirfd);
+
 private:
     ErrorOr<NonnullRefPtr<Custody>> custody_for_dirfd(int dirfd);
 
@@ -914,6 +939,10 @@ private:
     bool m_profiling { false };
     Atomic<bool, AK::MemoryOrder::memory_order_relaxed> m_is_stopped { false };
     bool m_should_generate_coredump { false };
+
+#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
+    KCOVInstance* m_kcov_instance { nullptr };
+#endif
 
     SpinlockProtected<RefPtr<Custody>, LockRank::None> m_executable;
 
@@ -934,13 +963,6 @@ public:
 private:
     SpinlockProtected<RefPtr<ProcessList>, LockRank::None> m_jail_process_list;
     SpinlockProtected<RefPtr<Jail>, LockRank::Process> m_attached_jail {};
-
-    struct MasterThreadLocalStorage {
-        LockWeakPtr<Memory::Region> region;
-        size_t size { 0 };
-        size_t alignment { 0 };
-    };
-    SpinlockProtected<MasterThreadLocalStorage, LockRank::None> m_master_tls;
 
     Mutex m_big_lock { "Process"sv, Mutex::MutexBehavior::BigLock };
     Mutex m_ptrace_lock { "ptrace"sv };

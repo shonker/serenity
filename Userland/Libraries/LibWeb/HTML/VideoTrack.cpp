@@ -54,13 +54,13 @@ VideoTrack::VideoTrack(JS::Realm& realm, JS::NonnullGCPtr<HTMLMediaElement> medi
     };
 
     m_playback_manager->on_decoder_error = [this](auto error) {
-        auto error_message = String::from_utf8(error.description()).release_value_but_fixme_should_propagate_errors();
-        m_media_element->set_decoder_error(move(error_message)).release_value_but_fixme_should_propagate_errors();
+        auto error_message = MUST(String::from_utf8(error.description()));
+        m_media_element->set_decoder_error(move(error_message));
     };
 
     m_playback_manager->on_fatal_playback_error = [this](auto error) {
-        auto error_message = String::from_utf8(error.string_literal()).release_value_but_fixme_should_propagate_errors();
-        m_media_element->set_decoder_error(move(error_message)).release_value_but_fixme_should_propagate_errors();
+        auto error_message = MUST(String::from_utf8(error.string_literal()));
+        m_media_element->set_decoder_error(move(error_message));
     };
 }
 
@@ -96,6 +96,11 @@ void VideoTrack::play_video(Badge<HTMLVideoElement>)
 void VideoTrack::pause_video(Badge<HTMLVideoElement>)
 {
     m_playback_manager->pause_playback();
+}
+
+void VideoTrack::stop_video(Badge<HTMLVideoElement>)
+{
+    m_playback_manager->terminate_playback();
 }
 
 Duration VideoTrack::position() const
@@ -141,7 +146,7 @@ void VideoTrack::set_selected(bool selected)
     // no longer in a VideoTrackList object, then the track being selected or unselected has no effect beyond changing the value of
     // the attribute on the VideoTrack object.)
     if (m_video_track_list) {
-        for (auto video_track : m_video_track_list->video_tracks({})) {
+        for (auto video_track : m_video_track_list->video_tracks()) {
             if (video_track.ptr() != this)
                 video_track->m_selected = false;
         }

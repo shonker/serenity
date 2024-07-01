@@ -31,7 +31,7 @@ ErrorOr<NonnullOwnPtr<AudioCodecPluginAgnostic>> AudioCodecPluginAgnostic::creat
 {
     auto duration = timestamp_from_samples(loader->total_samples(), loader->sample_rate());
 
-    auto update_timer = TRY(Core::Timer::try_create());
+    auto update_timer = Core::Timer::create();
     update_timer->set_interval(update_interval);
 
     auto plugin = TRY(adopt_nonnull_own_or_enomem(new (nothrow) AudioCodecPluginAgnostic(loader, duration, move(update_timer))));
@@ -43,8 +43,17 @@ ErrorOr<NonnullOwnPtr<AudioCodecPluginAgnostic>> AudioCodecPluginAgnostic::creat
         Audio::OutputState::Suspended, loader->sample_rate(), /* channels = */ 2, latency_ms,
         [&plugin = *plugin, loader](Bytes buffer, Audio::PcmSampleFormat format, size_t sample_count) -> ReadonlyBytes {
             VERIFY(format == Audio::PcmSampleFormat::Float32);
-            auto samples = loader->get_more_samples(sample_count).release_value_but_fixme_should_propagate_errors();
+
+            auto samples_result = loader->get_more_samples(sample_count);
+
+            if (samples_result.is_error()) {
+                plugin.on_decoder_error(MUST(String::formatted("Decoding failure: {}", samples_result.error())));
+                return buffer.trim(0);
+            }
+
+            auto samples = samples_result.release_value();
             VERIFY(samples.size() <= sample_count);
+
             FixedMemoryStream writing_stream { buffer };
 
             for (auto& sample : samples) {

@@ -12,6 +12,7 @@
 #include <LibURL/URL.h>
 #include <LibWeb/DOM/EventTarget.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/Scripting/Fetching.h>
 #include <LibWeb/HTML/WindowOrWorkerGlobalScope.h>
 #include <LibWeb/HTML/WorkerLocation.h>
 #include <LibWeb/HTML/WorkerNavigator.h>
@@ -50,6 +51,7 @@ public:
     using WindowOrWorkerGlobalScopeMixin::btoa;
     using WindowOrWorkerGlobalScopeMixin::clear_interval;
     using WindowOrWorkerGlobalScopeMixin::clear_timeout;
+    using WindowOrWorkerGlobalScopeMixin::create_image_bitmap;
     using WindowOrWorkerGlobalScopeMixin::fetch;
     using WindowOrWorkerGlobalScopeMixin::performance;
     using WindowOrWorkerGlobalScopeMixin::queue_microtask;
@@ -65,7 +67,7 @@ public:
 
     JS::NonnullGCPtr<WorkerLocation> location() const;
     JS::NonnullGCPtr<WorkerNavigator> navigator() const;
-    WebIDL::ExceptionOr<void> import_scripts(Vector<String> urls);
+    WebIDL::ExceptionOr<void> import_scripts(Vector<String> const& urls, PerformTheFetchHook = nullptr);
 
 #undef __ENUMERATE
 #define __ENUMERATE(attribute_name, event_name)       \
@@ -75,6 +77,8 @@ public:
 #undef __ENUMERATE
 
     WebIDL::ExceptionOr<void> post_message(JS::Value message, StructuredSerializeOptions const&);
+
+    JS::NonnullGCPtr<CSS::FontFaceSet> fonts();
 
     // Non-IDL public methods
 
@@ -90,6 +94,8 @@ public:
     void initialize_web_interfaces(Badge<WorkerEnvironmentSettingsObject>);
 
     Web::Page* page() { return m_page.ptr(); }
+
+    PolicyContainer policy_container() const { return m_policy_container; }
 
 protected:
     explicit WorkerGlobalScope(JS::Realm&, JS::NonnullGCPtr<Web::Page>);
@@ -126,6 +132,7 @@ private:
 
     // https://html.spec.whatwg.org/multipage/workers.html#concept-workerglobalscope-policy-container
     // A WorkerGlobalScope object has an associated policy container (a policy container). It is initially a new policy container.
+    PolicyContainer m_policy_container;
 
     // https://html.spec.whatwg.org/multipage/workers.html#concept-workerglobalscope-embedder-policy
     // A WorkerGlobalScope object has an associated embedder policy (an embedder policy).
@@ -135,6 +142,9 @@ private:
 
     // https://html.spec.whatwg.org/multipage/workers.html#concept-workerglobalscope-cross-origin-isolated-capability
     bool m_cross_origin_isolated_capability { false };
+
+    // https://drafts.csswg.org/css-font-loading/#font-source
+    JS::GCPtr<CSS::FontFaceSet> m_fonts;
 };
 
 }

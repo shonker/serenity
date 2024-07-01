@@ -1,9 +1,11 @@
 /*
  * Copyright (c) 2022-2023, networkException <networkexception@serenityos.org>
+ * Copyright (c) 2024, Tim Ledbetter <timledbetter@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibCore/EventLoop.h>
 #include <LibJS/Heap/HeapFunction.h>
 #include <LibJS/Runtime/ModuleRequest.h>
 #include <LibTextCodec/Decoder.h>
@@ -27,6 +29,8 @@
 #include <LibWeb/MimeSniff/MimeType.h>
 
 namespace Web::HTML {
+
+JS_DEFINE_ALLOCATOR(FetchContext);
 
 OnFetchScriptComplete create_on_fetch_script_complete(JS::Heap& heap, Function<void(JS::GCPtr<Script>)> function)
 {
@@ -311,7 +315,7 @@ WebIDL::ExceptionOr<void> fetch_classic_script(JS::NonnullGCPtr<HTMLScriptElemen
         }
 
         // 3. Let potentialMIMETypeForEncoding be the result of extracting a MIME type given response's header list.
-        auto potential_mime_type_for_encoding = response->header_list()->extract_mime_type().release_value_but_fixme_should_propagate_errors();
+        auto potential_mime_type_for_encoding = response->header_list()->extract_mime_type();
 
         // 4. Set character encoding to the result of legacy extracting an encoding given potentialMIMETypeForEncoding
         //    and character encoding.
@@ -379,7 +383,7 @@ WebIDL::ExceptionOr<void> fetch_classic_worker_script(URL::URL const& url, Envir
         // 3. If all of the following are true:
         // - response's URL's scheme is an HTTP(S) scheme; and
         // - the result of extracting a MIME type from response's header list is not a JavaScript MIME type,
-        auto maybe_mime_type = MUST(response->header_list()->extract_mime_type());
+        auto maybe_mime_type = response->header_list()->extract_mime_type();
         auto mime_type_is_javascript = maybe_mime_type.has_value() && maybe_mime_type->is_javascript();
 
         if (response->url().has_value() && Fetch::Infrastructure::is_http_or_https_scheme(response->url()->scheme()) && !mime_type_is_javascript) {
@@ -419,6 +423,83 @@ WebIDL::ExceptionOr<void> fetch_classic_worker_script(URL::URL const& url, Envir
         TRY(Fetch::Fetching::fetch(realm, request, Fetch::Infrastructure::FetchAlgorithms::create(vm, move(fetch_algorithms_input))));
     }
     return {};
+}
+
+// https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-classic-worker-imported-script
+WebIDL::ExceptionOr<JS::NonnullGCPtr<ClassicScript>> fetch_a_classic_worker_imported_script(URL::URL const& url, HTML::EnvironmentSettingsObject& settings_object, PerformTheFetchHook perform_fetch)
+{
+    auto& realm = settings_object.realm();
+    auto& vm = realm.vm();
+
+    // 1. Let response be null.
+    JS::GCPtr<Fetch::Infrastructure::Response> response = nullptr;
+
+    // 2. Let bodyBytes be null.
+    Fetch::Infrastructure::FetchAlgorithms::BodyBytes body_bytes;
+
+    // 3. Let request be a new request whose URL is url, client is settingsObject, destination is "script", initiator type is "other",
+    //    parser metadata is "not parser-inserted", and whose use-URL-credentials flag is set.
+    auto request = Fetch::Infrastructure::Request::create(vm);
+    request->set_url(url);
+    request->set_client(&settings_object);
+    request->set_destination(Fetch::Infrastructure::Request::Destination::Script);
+    request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Other);
+    request->set_parser_metadata(Fetch::Infrastructure::Request::ParserMetadata::NotParserInserted);
+    request->set_use_url_credentials(true);
+
+    auto process_response_consume_body = [&response, &body_bytes](JS::NonnullGCPtr<Fetch::Infrastructure::Response> res, Fetch::Infrastructure::FetchAlgorithms::BodyBytes bb) {
+        // 1. Set bodyBytes to bb.
+        body_bytes = move(bb);
+
+        // 2. Set response to res.
+        response = res;
+    };
+
+    // 4. If performFetch was given, run performFetch with request, isTopLevel, and with processResponseConsumeBody as defined below.
+    if (perform_fetch) {
+        TRY(perform_fetch->function()(request, TopLevelModule::Yes, move(process_response_consume_body)));
+    }
+    // Otherwise, fetch request with processResponseConsumeBody set to processResponseConsumeBody as defined below.
+    else {
+        Fetch::Infrastructure::FetchAlgorithms::Input fetch_algorithms_input {};
+        fetch_algorithms_input.process_response_consume_body = move(process_response_consume_body);
+        TRY(Fetch::Fetching::fetch(realm, request, Fetch::Infrastructure::FetchAlgorithms::create(vm, move(fetch_algorithms_input))));
+    }
+
+    // 5. Pause until response is not null.
+    auto& event_loop = settings_object.responsible_event_loop();
+    event_loop.spin_until([&]() {
+        return response;
+    });
+
+    // 6. Set response to response's unsafe response.
+    response = response->unsafe_response();
+
+    // 7. If any of the following are true:
+    //    - bodyBytes is null or failure;
+    //    - response's status is not an ok status; or
+    //    - the result of extracting a MIME type from response's header list is not a JavaScript MIME type,
+    //    then throw a "NetworkError" DOMException.
+    if (body_bytes.template has<Empty>() || body_bytes.template has<Fetch::Infrastructure::FetchAlgorithms::ConsumeBodyFailureTag>()
+        || !Fetch::Infrastructure::is_ok_status(response->status())
+        || !response->header_list()->extract_mime_type().has_value() || !response->header_list()->extract_mime_type()->is_javascript()) {
+        return WebIDL::NetworkError::create(realm, "Network error"_fly_string);
+    }
+
+    // 8. Let sourceText be the result of UTF-8 decoding bodyBytes.
+    auto decoder = TextCodec::decoder_for("UTF-8"sv);
+    VERIFY(decoder.has_value());
+    auto source_text = TextCodec::convert_input_to_utf8_using_given_decoder_unless_there_is_a_byte_order_mark(*decoder, body_bytes.get<ByteBuffer>()).release_value_but_fixme_should_propagate_errors();
+
+    // 9. Let mutedErrors be true if response was CORS-cross-origin, and false otherwise.
+    auto muted_errors = response->is_cors_cross_origin() ? ClassicScript::MutedErrors::Yes : ClassicScript::MutedErrors::No;
+
+    // 10. Let script be the result of creating a classic script given sourceText, settingsObject, response's URL, the default classic script fetch options, and mutedErrors.
+    auto response_url = response->url().value_or({});
+    auto script = ClassicScript::create(response_url.to_byte_string(), source_text, settings_object, response_url, 1, muted_errors);
+
+    // 11. Return script.
+    return script;
 }
 
 // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-module-worker-script-tree
@@ -591,6 +672,21 @@ void fetch_descendants_of_a_module_script(JS::Realm& realm, JavaScriptModuleScri
     }
 }
 
+// https://html.spec.whatwg.org/multipage/webappapis.html#fetch-destination-from-module-type
+Fetch::Infrastructure::Request::Destination fetch_destination_from_module_type(Fetch::Infrastructure::Request::Destination default_destination, ByteString const& module_type)
+{
+    // 1. If moduleType is "json", then return "json".
+    if (module_type == "json"sv)
+        return Fetch::Infrastructure::Request::Destination::JSON;
+
+    // 2. If moduleType is "css", then return "style".
+    if (module_type == "css"sv)
+        return Fetch::Infrastructure::Request::Destination::Style;
+
+    // 3. Return defaultDestination.
+    return default_destination;
+}
+
 // https://html.spec.whatwg.org/multipage/webappapis.html#fetch-a-single-module-script
 void fetch_single_module_script(JS::Realm& realm,
     URL::URL const& url,
@@ -623,12 +719,12 @@ void fetch_single_module_script(JS::Realm& realm,
     //    then queue a task on the networking task source to proceed with running the following steps.
     if (module_map.is_fetching(url, module_type)) {
         module_map.wait_for_change(realm.heap(), url, module_type, [on_complete, &realm](auto entry) -> void {
-            HTML::queue_global_task(HTML::Task::Source::Networking, realm.global_object(), [on_complete, entry] {
+            HTML::queue_global_task(HTML::Task::Source::Networking, realm.global_object(), JS::create_heap_function(realm.heap(), [on_complete, entry] {
                 // FIXME: This should run other steps, for now we just assume the script loaded.
                 VERIFY(entry.type == ModuleMap::EntryType::ModuleScript);
 
                 on_complete->function()(entry.module_script);
-            });
+            }));
         });
 
         return;
@@ -644,25 +740,27 @@ void fetch_single_module_script(JS::Realm& realm,
     // 7. Set moduleMap[(url, moduleType)] to "fetching".
     module_map.set(url, module_type, { ModuleMap::EntryType::Fetching, nullptr });
 
-    // 8. Let request be a new request whose URL is url, destination is destination, mode is "cors", referrer is referrer, and client is fetchClient.
+    // 8. Let request be a new request whose URL is url, mode is "cors", referrer is referrer, and client is fetchClient.
     auto request = Fetch::Infrastructure::Request::create(realm.vm());
     request->set_url(url);
-    request->set_destination(destination);
     request->set_mode(Fetch::Infrastructure::Request::Mode::CORS);
     request->set_referrer(referrer);
     request->set_client(&fetch_client);
 
-    // 9. If destination is "worker", "sharedworker", or "serviceworker", and isTopLevel is true, then set request's mode to "same-origin".
+    // 9. Set request's destination to the result of running the fetch destination from module type steps given destination and moduleType.
+    request->set_destination(fetch_destination_from_module_type(destination, module_type));
+
+    // 10. If destination is "worker", "sharedworker", or "serviceworker", and isTopLevel is true, then set request's mode to "same-origin".
     if ((destination == Fetch::Infrastructure::Request::Destination::Worker || destination == Fetch::Infrastructure::Request::Destination::SharedWorker || destination == Fetch::Infrastructure::Request::Destination::ServiceWorker) && is_top_level == TopLevelModule::Yes)
         request->set_mode(Fetch::Infrastructure::Request::Mode::SameOrigin);
 
-    // 10. Set request's initiator type to "script".
+    // 11. Set request's initiator type to "script".
     request->set_initiator_type(Fetch::Infrastructure::Request::InitiatorType::Script);
 
-    // 11. Set up the module script request given request and options.
+    // 12. Set up the module script request given request and options.
     set_up_module_script_request(request, options);
 
-    // 12. If performFetch was given, run performFetch with request, isTopLevel, and with processResponseConsumeBody as defined below.
+    // 13. If performFetch was given, run performFetch with request, isTopLevel, and with processResponseConsumeBody as defined below.
     //     Otherwise, fetch request with processResponseConsumeBody set to processResponseConsumeBody as defined below.
     //     In both cases, let processResponseConsumeBody given response response and null, failure, or a byte sequence bodyBytes be the following algorithm:
     auto process_response_consume_body = [&module_map, url, module_type, &settings_object, on_complete](JS::NonnullGCPtr<Fetch::Infrastructure::Response> response, Fetch::Infrastructure::FetchAlgorithms::BodyBytes body_bytes) {
@@ -682,7 +780,7 @@ void fetch_single_module_script(JS::Realm& realm,
         auto source_text = TextCodec::convert_input_to_utf8_using_given_decoder_unless_there_is_a_byte_order_mark(*decoder, body_bytes.get<ByteBuffer>()).release_value_but_fixme_should_propagate_errors();
 
         // 3. Let mimeType be the result of extracting a MIME type from response's header list.
-        auto mime_type = response->header_list()->extract_mime_type().release_value_but_fixme_should_propagate_errors();
+        auto mime_type = response->header_list()->extract_mime_type();
 
         // 4. Let moduleScript be null.
         JS::GCPtr<JavaScriptModuleScript> module_script;

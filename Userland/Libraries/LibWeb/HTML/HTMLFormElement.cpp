@@ -10,6 +10,8 @@
 #include <AK/StringBuilder.h>
 #include <LibTextCodec/Decoder.h>
 #include <LibWeb/Bindings/ExceptionOrUtils.h>
+#include <LibWeb/Bindings/HTMLFormElementPrototype.h>
+#include <LibWeb/DOM/DOMTokenList.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/DOM/HTMLFormControlsCollection.h>
@@ -59,8 +61,9 @@ void HTMLFormElement::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_elements);
-    for (auto& element : m_associated_elements)
-        visitor.visit(element);
+    visitor.visit(m_associated_elements);
+    visitor.visit(m_planned_navigation);
+    visitor.visit(m_rel_list);
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#implicit-submission
@@ -560,7 +563,7 @@ Vector<JS::NonnullGCPtr<DOM::Element>> HTMLFormElement::get_submittable_elements
                 submittable_elements.append(form_associated_element->form_associated_element_to_html_element());
         }
 
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     return submittable_elements;
@@ -581,6 +584,15 @@ StringView HTMLFormElement::method() const
         return "dialog"sv;
     }
     VERIFY_NOT_REACHED();
+}
+
+// https://html.spec.whatwg.org/multipage/forms.html#dom-form-rellist
+JS::NonnullGCPtr<DOM::DOMTokenList> HTMLFormElement::rel_list()
+{
+    // The relList IDL attribute must reflect the rel content attribute.
+    if (!m_rel_list)
+        m_rel_list = DOM::DOMTokenList::create(*this, HTML::AttributeNames::rel);
+    return *m_rel_list;
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-fs-method
@@ -608,6 +620,15 @@ String HTMLFormElement::action() const
 WebIDL::ExceptionOr<void> HTMLFormElement::set_action(String const& value)
 {
     return set_attribute(AttributeNames::action, value);
+}
+
+void HTMLFormElement::attribute_changed(FlyString const& name, Optional<String> const& value)
+{
+    HTMLElement::attribute_changed(name, value);
+    if (name == HTML::AttributeNames::rel) {
+        if (m_rel_list)
+            m_rel_list->associated_attribute_changed(value.value_or(String {}));
+    }
 }
 
 // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#picking-an-encoding-for-the-form
@@ -887,7 +908,7 @@ void HTMLFormElement::plan_to_navigate_to(URL::URL url, Variant<Empty, String, P
     // NOTE: `this`, `actual_resource` and `target_navigable` are protected by JS::SafeFunction.
     queue_an_element_task(Task::Source::DOMManipulation, [this, url, post_resource, target_navigable, history_handling, referrer_policy, user_involvement]() {
         // 1. Set the form's planned navigation to null.
-        m_planned_navigation = nullptr;
+        m_planned_navigation = {};
 
         // 2. Navigate targetNavigable to url using the form element's node document, with historyHandling set to historyHandling,
         //    referrerPolicy set to referrerPolicy, documentResource set to postResource, and cspNavigationType set to "form-submission".
@@ -1085,14 +1106,14 @@ FormAssociatedElement* HTMLFormElement::default_button()
     root().for_each_in_subtree([&](auto& node) {
         auto* form_associated_element = dynamic_cast<FormAssociatedElement*>(&node);
         if (!form_associated_element)
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
 
         if (form_associated_element->form() == this && form_associated_element->is_submit_button()) {
             default_button = form_associated_element;
-            return IterationDecision::Break;
+            return TraversalDecision::Break;
         }
 
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 
     return default_button;

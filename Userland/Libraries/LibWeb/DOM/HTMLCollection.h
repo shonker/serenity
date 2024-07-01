@@ -30,13 +30,13 @@ public:
         Children,
         Descendants,
     };
-    [[nodiscard]] static JS::NonnullGCPtr<HTMLCollection> create(ParentNode& root, Scope, Function<bool(Element const&)> filter);
+    [[nodiscard]] static JS::NonnullGCPtr<HTMLCollection> create(ParentNode& root, Scope, ESCAPING Function<bool(Element const&)> filter);
 
     virtual ~HTMLCollection() override;
 
     size_t length() const;
     Element* item(size_t index) const;
-    Element* named_item(FlyString const& name) const;
+    Element* named_item(FlyString const& key) const;
 
     JS::MarkedVector<JS::NonnullGCPtr<Element>> collect_matching_elements() const;
 
@@ -46,7 +46,7 @@ public:
     virtual bool is_supported_property_index(u32) const override;
 
 protected:
-    HTMLCollection(ParentNode& root, Scope, Function<bool(Element const&)> filter);
+    HTMLCollection(ParentNode& root, Scope, ESCAPING Function<bool(Element const&)> filter);
 
     virtual void initialize(JS::Realm&) override;
 

@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2020, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2024, Tim Ledbetter <timledbetter@gmail.com>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,6 +12,7 @@
 #include <LibIPC/Encoder.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/Range.h>
 #include <LibWeb/HTML/BrowsingContext.h>
 #include <LibWeb/HTML/EventLoop/EventLoop.h>
 #include <LibWeb/HTML/HTMLInputElement.h>
@@ -20,10 +22,14 @@
 #include <LibWeb/HTML/Scripting/TemporaryExecutionContext.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/HTML/TraversableNavigable.h>
+#include <LibWeb/HTML/Window.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Platform/EventLoopPlugin.h>
+#include <LibWeb/Selection/Selection.h>
 
 namespace Web {
+
+JS_DEFINE_ALLOCATOR(Page);
 
 JS::NonnullGCPtr<Page> Page::create(JS::VM& vm, JS::NonnullGCPtr<PageClient> page_client)
 {
@@ -42,18 +48,19 @@ void Page::visit_edges(JS::Cell::Visitor& visitor)
     Base::visit_edges(visitor);
     visitor.visit(m_top_level_traversable);
     visitor.visit(m_client);
+    visitor.visit(m_find_in_page_matches);
 }
 
-HTML::BrowsingContext& Page::focused_context()
+HTML::Navigable& Page::focused_navigable()
 {
-    if (m_focused_context)
-        return *m_focused_context;
-    return top_level_browsing_context();
+    if (m_focused_navigable)
+        return *m_focused_navigable;
+    return top_level_traversable();
 }
 
-void Page::set_focused_browsing_context(Badge<EventHandler>, HTML::BrowsingContext& browsing_context)
+void Page::set_focused_navigable(Badge<EventHandler>, HTML::Navigable& navigable)
 {
-    m_focused_context = browsing_context.make_weak_ptr();
+    m_focused_navigable = navigable;
 }
 
 void Page::load(URL::URL const& url)
@@ -63,11 +70,23 @@ void Page::load(URL::URL const& url)
 
 void Page::load_html(StringView html)
 {
+    // FIXME: #23909 Figure out why GC threshold does not stay low when repeatedly loading html from the WebView
+    heap().collect_garbage();
 
     (void)top_level_traversable()->navigate({ .url = "about:srcdoc"sv,
         .source_document = *top_level_traversable()->active_document(),
         .document_resource = String::from_utf8(html).release_value_but_fixme_should_propagate_errors(),
         .user_involvement = HTML::UserNavigationInvolvement::BrowserUI });
+}
+
+void Page::reload()
+{
+    top_level_traversable()->reload();
+}
+
+void Page::traverse_the_history_by_delta(int delta)
+{
+    top_level_traversable()->traverse_the_history_by_delta(delta);
 }
 
 Gfx::Palette Page::palette() const
@@ -151,37 +170,37 @@ DevicePixelRect Page::rounded_device_rect(CSSPixelRect rect) const
 
 bool Page::handle_mouseup(DevicePixelPoint position, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers)
 {
-    return top_level_browsing_context().event_handler().handle_mouseup(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers);
+    return top_level_traversable()->event_handler().handle_mouseup(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers);
 }
 
 bool Page::handle_mousedown(DevicePixelPoint position, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers)
 {
-    return top_level_browsing_context().event_handler().handle_mousedown(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers);
+    return top_level_traversable()->event_handler().handle_mousedown(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers);
 }
 
 bool Page::handle_mousemove(DevicePixelPoint position, DevicePixelPoint screen_position, unsigned buttons, unsigned modifiers)
 {
-    return top_level_browsing_context().event_handler().handle_mousemove(device_to_css_point(position), device_to_css_point(screen_position), buttons, modifiers);
+    return top_level_traversable()->event_handler().handle_mousemove(device_to_css_point(position), device_to_css_point(screen_position), buttons, modifiers);
 }
 
 bool Page::handle_mousewheel(DevicePixelPoint position, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers, DevicePixels wheel_delta_x, DevicePixels wheel_delta_y)
 {
-    return top_level_browsing_context().event_handler().handle_mousewheel(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers, wheel_delta_x.value(), wheel_delta_y.value());
+    return top_level_traversable()->event_handler().handle_mousewheel(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers, wheel_delta_x.value(), wheel_delta_y.value());
 }
 
 bool Page::handle_doubleclick(DevicePixelPoint position, DevicePixelPoint screen_position, unsigned button, unsigned buttons, unsigned modifiers)
 {
-    return top_level_browsing_context().event_handler().handle_doubleclick(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers);
+    return top_level_traversable()->event_handler().handle_doubleclick(device_to_css_point(position), device_to_css_point(screen_position), button, buttons, modifiers);
 }
 
 bool Page::handle_keydown(KeyCode key, unsigned modifiers, u32 code_point)
 {
-    return focused_context().event_handler().handle_keydown(key, modifiers, code_point);
+    return focused_navigable().event_handler().handle_keydown(key, modifiers, code_point);
 }
 
 bool Page::handle_keyup(KeyCode key, unsigned modifiers, u32 code_point)
 {
-    return focused_context().event_handler().handle_keyup(key, modifiers, code_point);
+    return focused_navigable().event_handler().handle_keyup(key, modifiers, code_point);
 }
 
 void Page::set_top_level_traversable(JS::NonnullGCPtr<HTML::TraversableNavigable> navigable)
@@ -377,14 +396,14 @@ void Page::did_request_select_dropdown(WeakPtr<HTML::HTMLSelectElement> target, 
     }
 }
 
-void Page::select_dropdown_closed(Optional<String> value)
+void Page::select_dropdown_closed(Optional<u32> const& selected_item_id)
 {
     if (m_pending_non_blocking_dialog == PendingNonBlockingDialog::Select) {
         m_pending_non_blocking_dialog = PendingNonBlockingDialog::None;
 
         if (m_pending_non_blocking_dialog_target) {
             auto& select_element = verify_cast<HTML::HTMLSelectElement>(*m_pending_non_blocking_dialog_target);
-            select_element.did_select_value(move(value));
+            select_element.did_select_item(selected_item_id);
             m_pending_non_blocking_dialog_target.clear();
         }
     }
@@ -502,6 +521,104 @@ void Page::set_user_style(String source)
     m_user_style_sheet_source = source;
     if (top_level_traversable_is_initialized() && top_level_traversable()->active_document()) {
         top_level_traversable()->active_document()->style_computer().invalidate_rule_cache();
+    }
+}
+
+void Page::clear_selection()
+{
+    auto documents = HTML::main_thread_event_loop().documents_in_this_event_loop();
+    for (auto const& document : documents) {
+        if (&document->page() != this)
+            continue;
+
+        auto selection = document->get_selection();
+        if (!selection)
+            continue;
+
+        selection->remove_all_ranges();
+    }
+}
+
+void Page::find_in_page(String const& query, CaseSensitivity case_sensitivity)
+{
+    m_find_in_page_match_index = 0;
+
+    if (query.is_empty()) {
+        m_find_in_page_matches = {};
+        update_find_in_page_selection();
+        return;
+    }
+
+    auto documents = HTML::main_thread_event_loop().documents_in_this_event_loop();
+    Vector<JS::Handle<DOM::Range>> all_matches;
+    for (auto const& document : documents) {
+        if (&document->page() != this)
+            continue;
+
+        auto matches = document->find_matching_text(query, case_sensitivity);
+        all_matches.extend(move(matches));
+    }
+
+    m_find_in_page_matches.clear_with_capacity();
+    for (auto& match : all_matches)
+        m_find_in_page_matches.append(*match);
+
+    update_find_in_page_selection();
+}
+
+void Page::find_in_page_next_match()
+{
+    if (m_find_in_page_matches.is_empty())
+        return;
+
+    if (m_find_in_page_match_index == m_find_in_page_matches.size() - 1) {
+        m_find_in_page_match_index = 0;
+    } else {
+        m_find_in_page_match_index++;
+    }
+
+    update_find_in_page_selection();
+}
+
+void Page::find_in_page_previous_match()
+{
+    if (m_find_in_page_matches.is_empty())
+        return;
+
+    if (m_find_in_page_match_index == 0) {
+        m_find_in_page_match_index = m_find_in_page_matches.size() - 1;
+    } else {
+        m_find_in_page_match_index--;
+    }
+
+    update_find_in_page_selection();
+}
+
+void Page::update_find_in_page_selection()
+{
+    clear_selection();
+
+    if (m_find_in_page_matches.is_empty())
+        return;
+
+    auto current_range = m_find_in_page_matches[m_find_in_page_match_index];
+    auto common_ancestor_container = current_range->common_ancestor_container();
+    auto& document = common_ancestor_container->document();
+    if (!document.window())
+        return;
+
+    auto selection = document.get_selection();
+    if (!selection)
+        return;
+
+    selection->add_range(*current_range);
+
+    if (auto* element = common_ancestor_container->parent_element()) {
+        DOM::ScrollIntoViewOptions scroll_options;
+        scroll_options.block = Bindings::ScrollLogicalPosition::Nearest;
+        scroll_options.inline_ = Bindings::ScrollLogicalPosition::Nearest;
+        scroll_options.behavior = Bindings::ScrollBehavior::Instant;
+        (void)element->scroll_into_view(scroll_options);
     }
 }
 

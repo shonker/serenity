@@ -6,6 +6,7 @@
 
 #include <Kernel/API/KeyCode.h>
 #include <LibWeb/Bindings/Intrinsics.h>
+#include <LibWeb/Bindings/WheelEventPrototype.h>
 #include <LibWeb/HTML/EventNames.h>
 #include <LibWeb/UIEvents/EventNames.h>
 #include <LibWeb/UIEvents/WheelEvent.h>
@@ -19,6 +20,7 @@ WheelEvent::WheelEvent(JS::Realm& realm, FlyString const& event_name, WheelEvent
     : MouseEvent(realm, event_name, event_init, page_x, page_y, offset_x, offset_y)
     , m_delta_x(event_init.delta_x)
     , m_delta_y(event_init.delta_y)
+    , m_delta_z(event_init.delta_z)
     , m_delta_mode(event_init.delta_mode)
 {
     set_event_characteristics();
@@ -30,6 +32,11 @@ void WheelEvent::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(WheelEvent);
+}
+
+JS::NonnullGCPtr<WheelEvent> WheelEvent::construct_impl(JS::Realm& realm, FlyString const& event_name, WheelEventInit const& wheel_event_init)
+{
+    return create(realm, event_name, wheel_event_init);
 }
 
 JS::NonnullGCPtr<WheelEvent> WheelEvent::create(JS::Realm& realm, FlyString const& event_name, WheelEventInit const& event_init, double page_x, double page_y, double offset_x, double offset_y)

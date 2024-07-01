@@ -243,6 +243,7 @@ CSSPixels FormattingContext::greatest_child_width(Box const& box) const
         box.for_each_child_of_type<Box>([&](Box const& child) {
             if (!child.is_absolutely_positioned())
                 max_width = max(max_width, m_state.get(child).margin_box_width());
+            return IterationDecision::Continue;
         });
     }
     return max_width;
@@ -283,7 +284,7 @@ CSSPixelSize FormattingContext::solve_replaced_size_constraint(CSSPixels input_w
     if (input_width > max_width && input_height < min_height)
         return { max_width, min_height };
 
-    if (input_width > 0) {
+    if (input_width > 0 && input_height > 0) {
         if (input_width > max_width && input_height > max_height && max_width / input_width <= max_height / input_height)
             return { max_width, max(min_height, max_width / aspect_ratio) };
         if (input_width > max_width && input_height > max_height && max_width / input_width > max_height / input_height)
@@ -409,9 +410,9 @@ CSSPixels FormattingContext::compute_table_box_width_inside_table_wrapper(Box co
     box.for_each_in_subtree_of_type<Box>([&](Box const& child_box) {
         if (child_box.display().is_table_inside()) {
             table_box = child_box;
-            return IterationDecision::Break;
+            return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
     VERIFY(table_box.has_value());
 
@@ -463,9 +464,9 @@ CSSPixels FormattingContext::compute_table_box_height_inside_table_wrapper(Box c
     box.for_each_in_subtree_of_type<Box>([&](Box const& child_box) {
         if (child_box.display().is_table_inside()) {
             table_box = child_box;
-            return IterationDecision::Break;
+            return TraversalDecision::Break;
         }
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
     VERIFY(table_box.has_value());
 
@@ -1163,7 +1164,7 @@ CSSPixelRect FormattingContext::content_box_rect_in_static_position_ancestor_coo
     auto rect = content_box_rect(box);
     if (&box == &ancestor_box)
         return rect;
-    for (auto const* current = box.parent(); current; current = current->parent()) {
+    for (auto const* current = box.static_position_containing_block(); current; current = current->static_position_containing_block()) {
         if (current == &ancestor_box)
             return rect;
         auto const& current_state = m_state.get(*current);
@@ -1210,9 +1211,8 @@ CSSPixelPoint FormattingContext::calculate_static_position(Box const& box) const
         }
     } else {
         auto const& box_state = m_state.get(box);
-        x = box_state.margin_left;
         // We're among block siblings, Y can be calculated easily.
-        y = box_state.margin_top + box_state.vertical_offset_of_parent_block_container;
+        y = box_state.vertical_offset_of_parent_block_container;
     }
     auto offset_to_static_parent = content_box_rect_in_static_position_ancestor_coordinate_space(box, *box.containing_block());
     return offset_to_static_parent.location().translated(x, y);
@@ -1257,15 +1257,27 @@ void FormattingContext::layout_absolutely_positioned_element(Box const& box, Ava
     compute_height_for_absolutely_positioned_element(box, available_space, BeforeOrAfterInsideLayout::After);
 
     CSSPixelPoint used_offset;
-    used_offset.set_x(box_state.inset_left + box_state.margin_box_left());
-    used_offset.set_y(box_state.inset_top + box_state.margin_box_top());
-    // NOTE: Absolutely positioned boxes are relative to the *padding edge* of the containing block.
-    //       Padding offset only need to be compensated when top/left/bottom/right is not auto because otherwise
-    //       the box is positioned at the static position of the containing block.
-    if (!box.computed_values().inset().top().is_auto() || !box.computed_values().inset().bottom().is_auto())
+
+    auto static_position = calculate_static_position(box);
+
+    if (box.computed_values().inset().top().is_auto() && box.computed_values().inset().bottom().is_auto()) {
+        used_offset.set_y(static_position.y());
+    } else {
+        used_offset.set_y(box_state.inset_top);
+        // NOTE: Absolutely positioned boxes are relative to the *padding edge* of the containing block.
         used_offset.translate_by(0, -containing_block_state.padding_top);
-    if (!box.computed_values().inset().left().is_auto() || !box.computed_values().inset().right().is_auto())
+    }
+
+    if (box.computed_values().inset().left().is_auto() && box.computed_values().inset().right().is_auto()) {
+        used_offset.set_x(static_position.x());
+    } else {
+        used_offset.set_x(box_state.inset_left);
+        // NOTE: Absolutely positioned boxes are relative to the *padding edge* of the containing block.
         used_offset.translate_by(-containing_block_state.padding_left, 0);
+    }
+
+    used_offset.translate_by(box_state.margin_box_left(), box_state.margin_box_top());
+
     box_state.set_content_offset(used_offset);
 
     if (independent_formatting_context)
@@ -1755,12 +1767,19 @@ CSSPixels FormattingContext::calculate_stretch_fit_height(Box const& box, Availa
 
 bool FormattingContext::should_treat_width_as_auto(Box const& box, AvailableSpace const& available_space)
 {
-    if (box.computed_values().width().is_auto())
+    auto const& computed_width = box.computed_values().width();
+    if (computed_width.is_auto())
         return true;
-    if (box.computed_values().width().contains_percentage()) {
+    if (computed_width.contains_percentage()) {
         if (available_space.width.is_max_content())
             return true;
         if (available_space.width.is_indefinite())
+            return true;
+    }
+    // AD-HOC: If the box has a preferred aspect ratio and no natural height,
+    //         we treat the width as auto, since it can't be resolved through the ratio.
+    if (computed_width.is_min_content() || computed_width.is_max_content() || computed_width.is_fit_content()) {
+        if (box.has_preferred_aspect_ratio() && !box.has_natural_height())
             return true;
     }
     return false;
@@ -1796,9 +1815,9 @@ bool FormattingContext::can_skip_is_anonymous_text_run(Box& box)
         box.for_each_in_subtree([&](auto const& node) {
             if (!is<TextNode>(node) || !static_cast<TextNode const&>(node).dom_node().data().bytes_as_string_view().is_whitespace()) {
                 contains_only_white_space = false;
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
             }
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
         if (contains_only_white_space)
             return true;

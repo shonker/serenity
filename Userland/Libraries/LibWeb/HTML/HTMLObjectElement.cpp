@@ -5,8 +5,10 @@
  */
 
 #include <LibGfx/Bitmap.h>
+#include <LibWeb/Bindings/HTMLObjectElementPrototype.h>
 #include <LibWeb/CSS/StyleComputer.h>
 #include <LibWeb/DOM/Document.h>
+#include <LibWeb/DOM/DocumentLoading.h>
 #include <LibWeb/DOM/Event.h>
 #include <LibWeb/HTML/DecodedImageData.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
@@ -65,6 +67,11 @@ void HTMLObjectElement::form_associated_element_attribute_changed(FlyString cons
         // This task being queued or actively running must delay the load event of the element's node document.
         queue_element_task_to_run_object_representation_steps();
     }
+}
+
+void HTMLObjectElement::form_associated_element_was_removed(DOM::Node*)
+{
+    destroy_the_child_navigable();
 }
 
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#attr-object-data
@@ -176,13 +183,15 @@ void HTMLObjectElement::resource_did_load()
 
     // 4. Run the appropriate set of steps from the following list:
     // * If the resource has associated Content-Type metadata
-    if (auto it = resource()->response_headers().find("Content-Type"sv); it != resource()->response_headers().end()) {
+    if (auto maybe_content_type = resource()->response_headers().get("Content-Type"sv); maybe_content_type.has_value()) {
+        auto& content_type = maybe_content_type.value();
+
         // 1. Let binary be false.
         bool binary = false;
 
         // 2. If the type specified in the resource's Content-Type metadata is "text/plain", and the result of applying the rules for distinguishing if a resource is text or binary to the resource is that the resource is not text/plain, then set binary to true.
-        if (it->value == "text/plain"sv) {
-            auto supplied_type = MimeSniff::MimeType::parse(it->value).release_value_but_fixme_should_propagate_errors();
+        if (content_type == "text/plain"sv) {
+            auto supplied_type = MimeSniff::MimeType::parse(content_type).release_value_but_fixme_should_propagate_errors();
             auto computed_type = MimeSniff::Resource::sniff(resource()->encoded_data(), MimeSniff::SniffingConfiguration {
                                                                                             .sniffing_context = MimeSniff::SniffingContext::TextOrBinary,
                                                                                             .supplied_type = move(supplied_type),
@@ -193,12 +202,12 @@ void HTMLObjectElement::resource_did_load()
         }
 
         // 3. If the type specified in the resource's Content-Type metadata is "application/octet-stream", then set binary to true.
-        if (it->value == "application/octet-stream"sv)
+        if (content_type == "application/octet-stream"sv)
             binary = true;
 
         // 4. If binary is false, then let the resource type be the type specified in the resource's Content-Type metadata, and jump to the step below labeled handler.
         if (!binary)
-            return run_object_representation_handler_steps(it->value);
+            return run_object_representation_handler_steps(content_type);
 
         // 5. If there is a type attribute present on the object element, and its value is not application/octet-stream, then run the following steps:
         if (auto type = this->type(); !type.is_empty() && (type != "application/octet-stream"sv)) {
@@ -233,15 +242,6 @@ void HTMLObjectElement::resource_did_load()
     run_object_representation_handler_steps(resource_type.has_value() ? resource_type->to_byte_string() : ByteString::empty());
 }
 
-static bool is_xml_mime_type(StringView resource_type)
-{
-    auto mime_type = MimeSniff::MimeType::parse(resource_type).release_value_but_fixme_should_propagate_errors();
-    if (!mime_type.has_value())
-        return false;
-
-    return mime_type->is_xml();
-}
-
 // https://html.spec.whatwg.org/multipage/iframe-embed-object.html#the-object-element:plugin-11
 void HTMLObjectElement::run_object_representation_handler_steps(Optional<ByteString> resource_type)
 {
@@ -252,11 +252,19 @@ void HTMLObjectElement::run_object_representation_handler_steps(Optional<ByteStr
     //     If plugins are being sandboxed, then jump to the step below labeled fallback.
     //     Otherwise, the user agent should use the plugin that supports resource type and pass the content of the resource to that plugin. If the plugin reports an error, then jump to the step below labeled fallback.
 
+    if (!resource_type.has_value()) {
+        run_object_representation_fallback_steps();
+        return;
+    }
+    auto mime_type = MimeSniff::MimeType::parse(*resource_type).release_value_but_fixme_should_propagate_errors();
+
     // * If the resource type is an XML MIME type, or if the resource type does not start with "image/"
-    if (resource_type.has_value() && (is_xml_mime_type(*resource_type) || !resource_type->starts_with("image/"sv))) {
+    if (mime_type.has_value() && can_load_document_with_type(*mime_type) && (mime_type->is_xml() || !mime_type->is_image())) {
         // If the object element's content navigable is null, then create a new child navigable for the element.
-        if (!m_content_navigable)
+        if (!m_content_navigable && in_a_document_tree()) {
             MUST(create_new_child_navigable());
+            set_content_navigable_initialized();
+        }
 
         // NOTE: Creating a new nested browsing context can fail if the document is not attached to a browsing context
         if (!m_content_navigable)

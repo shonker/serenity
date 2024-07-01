@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGUI/Event.h>
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/GrayscaleBitmap.h>
@@ -17,6 +16,8 @@
 #include <LibWeb/Painting/InputColors.h>
 
 namespace Web::Painting {
+
+JS_DEFINE_ALLOCATOR(CheckBoxPaintable);
 
 // A 16x16 signed distance field for the checkbox's tick (slightly rounded):
 static constexpr Array<u8, 16 * 16> s_check_mark_sdf {

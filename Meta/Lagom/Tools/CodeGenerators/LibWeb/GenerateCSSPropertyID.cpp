@@ -22,7 +22,7 @@ bool is_animatable_property(JsonObject& properties, StringView property_name);
 static bool type_name_is_enum(StringView type_name)
 {
     return !AK::first_is_one_of(type_name,
-        "angle"sv, "background-position"sv, "color"sv, "custom-ident"sv, "easing-function"sv, "flex"sv, "frequency"sv, "image"sv,
+        "angle"sv, "background-position"sv, "basic-shape"sv, "color"sv, "custom-ident"sv, "easing-function"sv, "flex"sv, "frequency"sv, "image"sv,
         "integer"sv, "length"sv, "number"sv, "paint"sv, "percentage"sv, "position"sv, "ratio"sv, "rect"sv,
         "resolution"sv, "string"sv, "time"sv, "url"sv);
 }
@@ -69,8 +69,8 @@ void replace_logical_aliases(JsonObject& properties)
     AK::HashMap<ByteString, ByteString> logical_aliases;
     properties.for_each_member([&](auto& name, auto& value) {
         VERIFY(value.is_object());
-        const auto& value_as_object = value.as_object();
-        const auto logical_alias_for = value_as_object.get_array("logical-alias-for"sv);
+        auto const& value_as_object = value.as_object();
+        auto const logical_alias_for = value_as_object.get_array("logical-alias-for"sv);
         if (logical_alias_for.has_value()) {
             auto const& aliased_properties = logical_alias_for.value();
             for (auto const& aliased_property : aliased_properties.values()) {
@@ -174,12 +174,14 @@ bool is_animatable_property(PropertyID);
 Optional<PropertyID> property_id_from_camel_case_string(StringView);
 Optional<PropertyID> property_id_from_string(StringView);
 [[nodiscard]] FlyString const& string_from_property_id(PropertyID);
+[[nodiscard]] FlyString const& camel_case_string_from_property_id(PropertyID);
 bool is_inherited_property(PropertyID);
 NonnullRefPtr<StyleValue> property_initial_value(JS::Realm&, PropertyID);
 
 enum class ValueType {
     Angle,
     BackgroundPosition,
+    BasicShape,
     Color,
     CustomIdent,
     EasingFunction,
@@ -414,6 +416,33 @@ FlyString const& string_from_property_id(PropertyID property_id) {
         member_generator.append(R"~~~(
     case PropertyID::@name:titlecase@: {
         static FlyString name = "@name@"_fly_string;
+        return name;
+    }
+)~~~");
+    });
+
+    generator.append(R"~~~(
+    default: {
+        static FlyString invalid_property_id_string = "(invalid CSS::PropertyID)"_fly_string;
+        return invalid_property_id_string;
+    }
+    }
+}
+
+FlyString const& camel_case_string_from_property_id(PropertyID property_id) {
+    switch (property_id) {
+)~~~");
+
+    properties.for_each_member([&](auto& name, auto& value) {
+        VERIFY(value.is_object());
+
+        auto member_generator = generator.fork();
+        member_generator.set("name", name);
+        member_generator.set("name:titlecase", title_casify(name));
+        member_generator.set("name:camelcase", camel_casify(name));
+        member_generator.append(R"~~~(
+    case PropertyID::@name:titlecase@: {
+        static FlyString name = "@name:camelcase@"_fly_string;
         return name;
     }
 )~~~");
@@ -699,6 +728,8 @@ bool property_accepts_type(PropertyID property_id, ValueType value_type)
                     property_generator.appendln("        case ValueType::Angle:");
                 } else if (type_name == "background-position") {
                     property_generator.appendln("        case ValueType::BackgroundPosition:");
+                } else if (type_name == "basic-shape") {
+                    property_generator.appendln("        case ValueType::BasicShape:");
                 } else if (type_name == "color") {
                     property_generator.appendln("        case ValueType::Color:");
                 } else if (type_name == "custom-ident") {

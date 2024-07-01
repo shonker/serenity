@@ -18,13 +18,13 @@ ViewImplementation::ViewImplementation()
 {
     m_backing_store_shrink_timer = Core::Timer::create_single_shot(3000, [this] {
         resize_backing_stores_if_needed(WindowResizeInProgress::No);
-    }).release_value_but_fixme_should_propagate_errors();
+    });
 
     m_repeated_crash_timer = Core::Timer::create_single_shot(1000, [this] {
         // Reset the "crashing a lot" counter after 1 second in case we just
         // happen to be visiting crashy websites a lot.
         this->m_crash_count = 0;
-    }).release_value_but_fixme_should_propagate_errors();
+    });
 
     on_request_file = [this](auto const& path, auto request_id) {
         auto file = Core::File::open(path, Core::File::OpenMode::Read);
@@ -32,7 +32,7 @@ ViewImplementation::ViewImplementation()
         if (file.is_error())
             client().async_handle_file_return(page_id(), file.error().code(), {}, request_id);
         else
-            client().async_handle_file_return(page_id(), 0, IPC::File(*file.value()), request_id);
+            client().async_handle_file_return(page_id(), 0, IPC::File::adopt_file(file.release_value()), request_id);
     };
 }
 
@@ -88,6 +88,16 @@ void ViewImplementation::load_html(StringView html)
 void ViewImplementation::load_empty_document()
 {
     load_html(""sv);
+}
+
+void ViewImplementation::reload()
+{
+    client().async_reload(page_id());
+}
+
+void ViewImplementation::traverse_the_history_by_delta(int delta)
+{
+    client().async_traverse_the_history_by_delta(page_id(), delta);
 }
 
 void ViewImplementation::zoom_in()
@@ -168,6 +178,21 @@ void ViewImplementation::select_all()
 void ViewImplementation::paste(String const& text)
 {
     client().async_paste(page_id(), text);
+}
+
+void ViewImplementation::find_in_page(String const& query, CaseSensitivity case_sensitivity)
+{
+    client().async_find_in_page(page_id(), query, case_sensitivity);
+}
+
+void ViewImplementation::find_in_page_next_match()
+{
+    client().async_find_in_page_next_match(page_id());
+}
+
+void ViewImplementation::find_in_page_previous_match()
+{
+    client().async_find_in_page_previous_match(page_id());
 }
 
 void ViewImplementation::get_source()
@@ -290,9 +315,9 @@ void ViewImplementation::file_picker_closed(Vector<Web::HTML::SelectedFile> sele
     client().async_file_picker_closed(page_id(), move(selected_files));
 }
 
-void ViewImplementation::select_dropdown_closed(Optional<String> value)
+void ViewImplementation::select_dropdown_closed(Optional<u32> const& selected_item_id)
 {
-    client().async_select_dropdown_closed(page_id(), value);
+    client().async_select_dropdown_closed(page_id(), selected_item_id);
 }
 
 void ViewImplementation::toggle_media_play_state()
@@ -343,6 +368,12 @@ void ViewImplementation::did_change_audio_play_state(Badge<WebContentClient>, We
 
     if (state_changed && on_audio_play_state_changed)
         on_audio_play_state_changed(m_audio_play_state);
+}
+
+void ViewImplementation::did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const
+{
+    if (on_navigation_buttons_state_changed)
+        on_navigation_buttons_state_changed(back_enabled, forward_enabled);
 }
 
 void ViewImplementation::handle_resize()

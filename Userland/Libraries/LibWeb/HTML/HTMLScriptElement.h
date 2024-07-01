@@ -10,6 +10,7 @@
 #include <LibWeb/DOM/DocumentLoadEventDelayer.h>
 #include <LibWeb/HTML/CORSSettingAttribute.h>
 #include <LibWeb/HTML/HTMLElement.h>
+#include <LibWeb/HTML/Scripting/ImportMapParseResult.h>
 #include <LibWeb/HTML/Scripting/Script.h>
 #include <LibWeb/ReferrerPolicy/ReferrerPolicy.h>
 
@@ -47,7 +48,7 @@ public:
     // https://html.spec.whatwg.org/multipage/scripting.html#dom-script-supports
     static bool supports(JS::VM&, StringView type)
     {
-        return type.is_one_of("classic"sv, "module"sv);
+        return type.is_one_of("classic"sv, "module"sv, "importmap"sv);
     }
 
     void set_source_line_number(Badge<HTMLParser>, size_t source_line_number) { m_source_line_number = source_line_number; }
@@ -57,6 +58,9 @@ public:
 
     String text() { return child_text_content(); }
     void set_text(String const& text) { string_replace_all(text); }
+
+    [[nodiscard]] bool async() const;
+    void set_async(bool);
 
 private:
     HTMLScriptElement(DOM::Document&, DOM::QualifiedName);
@@ -78,7 +82,7 @@ private:
         struct Null { };
     };
 
-    using Result = Variant<ResultState::Uninitialized, ResultState::Null, JS::NonnullGCPtr<HTML::Script>>;
+    using Result = Variant<ResultState::Uninitialized, ResultState::Null, JS::NonnullGCPtr<HTML::Script>, JS::NonnullGCPtr<HTML::ImportMapParseResult>>;
 
     // https://html.spec.whatwg.org/multipage/scripting.html#mark-as-ready
     void mark_as_ready(Result);

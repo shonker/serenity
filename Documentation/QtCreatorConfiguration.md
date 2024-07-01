@@ -25,7 +25,7 @@ First, make sure you have a working toolchain and can build and run SerenityOS. 
     #define __SSE__
     ```
     If you're working on the Kernel, just uncomment `#define KERNEL`.
-* Edit the `serenity.cxxflags` file to say `-std=c++20 -fsigned-char -fconcepts -fno-exceptions -fno-semantic-interposition -fPIC`
+* Edit the `serenity.cxxflags` file to say `-std=c++23 -fsigned-char -fconcepts -fno-exceptions -fno-semantic-interposition -fPIC`
 * Edit the `serenity.includes` file to list the following lines:
     ```
     ./
@@ -48,7 +48,7 @@ Qt Creator should be set up correctly now, go ahead and explore the project and 
 
 ## Auto-Formatting
 
-You can use `clang-format` to help you with the [style guide](CodingStyle.md). Before you proceed, check that you're actually using clang-format version 16, as some OSes will ship older clang-format versions by default.
+You can use `clang-format` to help you with the [style guide](CodingStyle.md). Before you proceed, check that you're actually using clang-format version 18, as some OSes will ship older clang-format versions by default.
 
 - In QtCreator, go to "Help > About Plugins…"
 - Find the `Beautifier (experimental)` row (for example, by typing `beau` into the search)

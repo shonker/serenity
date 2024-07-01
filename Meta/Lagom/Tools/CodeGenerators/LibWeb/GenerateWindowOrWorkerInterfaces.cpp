@@ -58,70 +58,6 @@ static Optional<LegacyConstructor> const& lookup_legacy_constructor(IDL::Interfa
     return s_legacy_constructors.get(interface.name).value();
 }
 
-static ErrorOr<void> generate_forwarding_header(StringView output_path, Vector<IDL::Interface&>& exposed_interfaces)
-{
-    StringBuilder builder;
-    SourceGenerator generator(builder);
-
-    generator.append(R"~~~(
-#pragma once
-
-namespace Web::Bindings {
-)~~~");
-
-    auto add_namespace = [](SourceGenerator& gen, StringView namespace_class) {
-        gen.set("namespace_class", namespace_class);
-
-        gen.append(R"~~~(
-class @namespace_class@;)~~~");
-    };
-
-    auto add_interface = [](SourceGenerator& gen, StringView prototype_class, StringView constructor_class, Optional<LegacyConstructor> const& legacy_constructor, StringView named_properties_class) {
-        gen.set("prototype_class", prototype_class);
-        gen.set("constructor_class", constructor_class);
-
-        gen.append(R"~~~(
-class @prototype_class@;
-class @constructor_class@;)~~~");
-
-        if (legacy_constructor.has_value()) {
-            gen.set("legacy_constructor_class", legacy_constructor->constructor_class);
-            gen.append(R"~~~(
-class @legacy_constructor_class@;)~~~");
-        }
-        if (!named_properties_class.is_empty()) {
-            gen.set("named_properties_class", named_properties_class);
-            gen.append(R"~~~(
-class @named_properties_class@;)~~~");
-        }
-    };
-
-    for (auto& interface : exposed_interfaces) {
-        auto gen = generator.fork();
-
-        String named_properties_class;
-        if (interface.extended_attributes.contains("Global") && interface.supports_named_properties()) {
-            named_properties_class = MUST(String::formatted("{}Properties", interface.name));
-        }
-
-        if (interface.is_namespace)
-            add_namespace(gen, interface.namespace_class);
-        else
-            add_interface(gen, interface.prototype_class, interface.constructor_class, lookup_legacy_constructor(interface), named_properties_class);
-    }
-
-    generator.append(R"~~~(
-
-}
-)~~~");
-
-    auto generated_forward_path = LexicalPath(output_path).append("Forward.h"sv).string();
-    auto generated_forward_file = TRY(Core::File::open(generated_forward_path, Core::File::OpenMode::Write));
-    TRY(generated_forward_file->write_until_depleted(generator.as_string_view().bytes()));
-
-    return {};
-}
-
 static ErrorOr<void> generate_intrinsic_definitions(StringView output_path, Vector<IDL::Interface&>& exposed_interfaces)
 {
     StringBuilder builder;
@@ -434,12 +370,18 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     // TODO: service_worker_exposed
 
     for (size_t i = 0; i < paths.size(); ++i) {
-        IDL::Parser parser(paths[i], file_contents[i], lexical_base.string());
-        TRY(add_to_interface_sets(parser.parse(), intrinsics, window_exposed, dedicated_worker_exposed, shared_worker_exposed));
+        auto const& path = paths[i];
+        IDL::Parser parser(path, file_contents[i], lexical_base.string());
+        auto& interface = parser.parse();
+        if (interface.name.is_empty()) {
+            s_error_string = ByteString::formatted("Interface for file {} missing", path);
+            return Error::from_string_view(s_error_string.view());
+        }
+
+        TRY(add_to_interface_sets(interface, intrinsics, window_exposed, dedicated_worker_exposed, shared_worker_exposed));
         parsers.append(move(parser));
     }
 
-    TRY(generate_forwarding_header(output_path, intrinsics));
     TRY(generate_intrinsic_definitions(output_path, intrinsics));
 
     TRY(generate_exposed_interface_header("Window"sv, output_path));

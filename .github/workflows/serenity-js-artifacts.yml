@@ -4,6 +4,7 @@ on: [push]
 
 env:
   SERENITY_SOURCE_DIR: ${{ github.workspace }}
+  SERENITY_CCACHE_DIR: ${{ github.workspace }}/.ccache
 
 jobs:
   build-and-package:
@@ -14,9 +15,11 @@ jobs:
       matrix:
         os: [ubuntu-22.04]
         package_type: [Linux-x86_64]
+        os_name: [Linux]
         include:
-          - os: macos-13
+          - os: macos-14
             package_type: macOS-universal2
+            os_name: macOS
 
     concurrency:
       group: ${{ github.workflow }}-${{ matrix.os }}
@@ -26,64 +29,32 @@ jobs:
       - name: Checkout SerenityOS/serenity
         uses: actions/checkout@v4
 
-      - name: Install dependencies Ubuntu
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build unzip gcc-12 g++-12
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
-
-      - name: Install dependencies macOS
-        run: |
-          brew install bash ninja unzip
-        if: ${{ matrix.os == 'macos-13' }}
-
-      - name: Select Xcode version
-        uses: mobiledevops/xcode-select-version-action@v1
+      - name: "Set up environment"
+        uses: ./.github/actions/setup
         with:
-          xcode-select-version: 14.3
-        if: ${{ matrix.os == 'macos-13' }}
+          os: ${{ matrix.os_name }}
+          arch: 'Lagom'
 
-      - name: Check versions Ubuntu
-        run: |
-          ninja --version; gcc-12 --version; g++-12 --version
-        if: ${{ matrix.os == 'ubuntu-22.04' }}
-
-      - name: Check versions macOS
-        run: |
-          ninja --version; clang++ --version
-        if: ${{ matrix.os == 'macos-13' }}
-
-      - name: Create build directory
-        run: |
-          mkdir -p Build/TZDB
-          mkdir -p Build/UCD
-          mkdir -p Build/CLDR
-
-      - name: TimeZoneData cache
-        uses: actions/cache@v4
+      - name: Restore Caches
+        uses: ./.github/actions/cache-restore
+        id: 'cache-restore'
         with:
-          path: ${{ github.workspace }}/libjs-test262/Build/TZDB
-          key: TimeZoneData-${{ hashFiles('Meta/CMake/time_zone_data.cmake') }}
-
-      - name: UnicodeData cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/libjs-test262/Build/UCD
-          key: UnicodeData-${{ hashFiles('Meta/CMake/unicode_data.cmake') }}
-
-      - name: UnicodeLocale cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/libjs-test262/Build/CLDR
-          key: UnicodeLocale-${{ hashFiles('Meta/CMake/locale_data.cmake') }}
+          os: ${{ matrix.os_name }}
+          arch: 'Lagom'
+          cache_key_extra: 'LibJS Artifacts'
+          serenity_ccache_path: ${{ env.SERENITY_CCACHE_DIR }}
+          download_cache_path: ${{ github.workspace }}/Build/caches
 
       - name: Create build directory Ubuntu
         run: |
           cmake -S Meta/Lagom -B Build -G Ninja \
-            -DCMAKE_C_COMPILER=gcc-12 \
-            -DCMAKE_CXX_COMPILER=g++-12 \
-            -DBUILD_LAGOM=ON
+            -DCMAKE_C_COMPILER=gcc-13 \
+            -DCMAKE_CXX_COMPILER=g++-13 \
+            -DBUILD_LAGOM=ON \
+            -DSERENITY_CACHE_DIR=${{ github.workspace }}/Build/caches
         if: ${{ matrix.os == 'ubuntu-22.04' }}
+        env:
+          CCACHE_DIR: ${{ env.SERENITY_CCACHE_DIR }}
 
       - name: Create build directory macOS
         run: |
@@ -91,14 +62,27 @@ jobs:
           cmake -S Meta/Lagom -B Build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
-            -DBUILD_LAGOM=ON
-        if: ${{ matrix.os == 'macos-13' }}
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="11.0" \
+            -DBUILD_LAGOM=ON \
+            -DSERENITY_CACHE_DIR=${{ github.workspace }}/Build/caches
+        if: ${{ matrix.os == 'macos-14' }}
+        env:
+          CCACHE_DIR: ${{ env.SERENITY_CCACHE_DIR }}
 
       - name: Build and package js
         working-directory: Build
         run: |
           ninja js
           cpack
+        env:
+          CCACHE_DIR: ${{ env.SERENITY_CCACHE_DIR }}
+
+      - name: Save Caches
+        uses: ./.github/actions/cache-save
+        with:
+          arch: 'Lagom'
+          serenity_ccache_path: ${{ env.SERENITY_CCACHE_DIR }}
+          serenity_ccache_primary_key: ${{ steps.cache-restore.outputs.serenity_ccache_primary_key }}
 
       - name: Upload js package
         uses: actions/upload-artifact@v4

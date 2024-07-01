@@ -35,7 +35,7 @@
 #include <LibWeb/Dump.h>
 #include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/Layout/Viewport.h>
-#include <LibWeb/Loader/ResourceLoader.h>
+#include <LibWeb/Loader/UserAgent.h>
 #include <LibWebView/CookieJar.h>
 #include <LibWebView/OutOfProcessWebView.h>
 #include <LibWebView/SearchEngine.h>
@@ -62,7 +62,7 @@ BrowserWindow::BrowserWindow(WebView::CookieJar& cookie_jar, Vector<URL::URL> co
     restore_size_and_position("Browser"sv, "Window"sv, { { 730, 560 } });
     save_size_and_position_on_close("Browser"sv, "Window"sv);
     set_icon(app_icon.bitmap_for_size(16));
-    set_title("Ladybird");
+    set_title("Browser");
 
     auto widget = set_main_widget<GUI::Widget>();
     widget->load_from_gml(browser_window_gml).release_value_but_fixme_should_propagate_errors();
@@ -377,7 +377,7 @@ void BrowserWindow::build_menus(StringView const man_file)
         },
         this));
     debug_menu->add_action(GUI::Action::create("Dump &History", { Mod_Ctrl, Key_H }, g_icon_bag.history, [this](auto&) {
-        active_tab().m_history.dump();
+        active_tab().view().debug_request("dump-session-history");
     }));
     debug_menu->add_action(GUI::Action::create("Dump C&ookies", g_icon_bag.cookie, [this](auto&) {
         m_cookie_jar.dump_cookies();
@@ -547,7 +547,7 @@ void BrowserWindow::set_window_title_for_tab(Tab const& tab)
 {
     auto& title = tab.title();
     auto url = tab.url();
-    set_title(ByteString::formatted("{} - Ladybird", title.is_empty() ? url.to_byte_string() : title));
+    set_title(ByteString::formatted("{} - Browser", title.is_empty() ? url.to_byte_string() : title));
 }
 
 Tab& BrowserWindow::create_new_tab(URL::URL const& url, Web::HTML::ActivateTab activate)
@@ -780,7 +780,7 @@ void BrowserWindow::show_task_manager_window()
     if (!m_task_manager_window) {
         m_task_manager_window = GUI::Window::construct();
         m_task_manager_window->set_window_mode(GUI::WindowMode::Modeless);
-        m_task_manager_window->resize(400, 300);
+        m_task_manager_window->resize(600, 400);
         m_task_manager_window->set_title("Task Manager");
 
         (void)m_task_manager_window->set_main_widget<TaskManagerWidget>();

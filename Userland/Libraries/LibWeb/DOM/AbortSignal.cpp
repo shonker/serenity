@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/AbortSignalPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/AbortSignal.h>
 #include <LibWeb/DOM/Document.h>
@@ -98,14 +99,9 @@ void AbortSignal::visit_edges(JS::Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_abort_reason);
-    for (auto& algorithm : m_abort_algorithms)
-        visitor.visit(algorithm);
-
-    for (auto& source_signal : m_source_signals)
-        visitor.visit(source_signal);
-
-    for (auto& dependent_signal : m_dependent_signals)
-        visitor.visit(dependent_signal);
+    visitor.visit(m_abort_algorithms);
+    visitor.visit(m_source_signals);
+    visitor.visit(m_dependent_signals);
 }
 
 // https://dom.spec.whatwg.org/#dom-abortsignal-abort
@@ -140,10 +136,10 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> AbortSignal::timeout(JS::VM& 
     // 3. Run steps after a timeout given global, "AbortSignal-timeout", milliseconds, and the following step:
     window_or_worker->run_steps_after_a_timeout(milliseconds, [&realm, &global, signal]() {
         // 1. Queue a global task on the timer task source given global to signal abort given signal and a new "TimeoutError" DOMException.
-        HTML::queue_global_task(HTML::Task::Source::TimerTask, global, [&realm, signal]() mutable {
+        HTML::queue_global_task(HTML::Task::Source::TimerTask, global, JS::create_heap_function(realm.heap(), [&realm, signal]() mutable {
             auto reason = WebIDL::TimeoutError::create(realm, "Signal timed out"_fly_string);
             signal->signal_abort(reason);
-        });
+        }));
     });
 
     // 4. Return signal.
@@ -151,25 +147,10 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> AbortSignal::timeout(JS::VM& 
 }
 
 // https://dom.spec.whatwg.org/#dom-abortsignal-any
-WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> AbortSignal::any(JS::VM& vm, JS::Value signals)
+WebIDL::ExceptionOr<JS::NonnullGCPtr<AbortSignal>> AbortSignal::any(JS::VM& vm, Vector<JS::Handle<AbortSignal>> const& signals)
 {
-    Vector<JS::Handle<AbortSignal>> signals_list;
-    auto iterator_record = TRY(get_iterator(vm, signals, JS::IteratorHint::Sync));
-    while (true) {
-        auto next = TRY(iterator_step_value(vm, iterator_record));
-        if (!next.has_value())
-            break;
-
-        auto value = next.release_value();
-        if (!value.is_object() || !is<AbortSignal>(value.as_object()))
-            return vm.throw_completion<JS::TypeError>(JS::ErrorType::NotAnObjectOfType, "AbortSignal");
-
-        auto& signal = static_cast<AbortSignal&>(value.as_object());
-        signals_list.append(JS::make_handle(signal));
-    }
-
     // The static any(signals) method steps are to return the result of creating a dependent abort signal from signals using AbortSignal and the current realm.
-    return create_dependent_abort_signal(*vm.current_realm(), signals_list);
+    return create_dependent_abort_signal(*vm.current_realm(), signals);
 }
 
 // https://dom.spec.whatwg.org/#create-a-dependent-abort-signal

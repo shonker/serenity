@@ -570,17 +570,21 @@ void Painter::draw_rect(IntRect const& a_rect, Color color, bool rough)
     int scale = this->scale();
 
     if (rect.top() >= clipped_rect.top() && rect.top() < clipped_rect.bottom()) {
-        int start_x = rough ? max(rect.x() + 1, clipped_rect.x()) : clipped_rect.x();
-        int width = rough ? min(rect.width() - 2, clipped_rect.width()) : clipped_rect.width();
-        for (int i = 0; i < scale; ++i)
-            fill_physical_scanline_with_draw_op(rect.top() * scale + i, start_x * scale, width * scale, color);
+        int width = rough ? max(0, min(rect.width() - 2, clipped_rect.width())) : clipped_rect.width();
+        if (width > 0) {
+            int start_x = rough ? max(rect.x() + 1, clipped_rect.x()) : clipped_rect.x();
+            for (int i = 0; i < scale; ++i)
+                fill_physical_scanline_with_draw_op(rect.top() * scale + i, start_x * scale, width * scale, color);
+        }
         ++min_y;
     }
     if (rect.bottom() > clipped_rect.top() && rect.bottom() <= clipped_rect.bottom()) {
-        int start_x = rough ? max(rect.x() + 1, clipped_rect.x()) : clipped_rect.x();
-        int width = rough ? min(rect.width() - 2, clipped_rect.width()) : clipped_rect.width();
-        for (int i = 0; i < scale; ++i)
-            fill_physical_scanline_with_draw_op(max_y * scale + i, start_x * scale, width * scale, color);
+        int width = rough ? max(0, min(rect.width() - 2, clipped_rect.width())) : clipped_rect.width();
+        if (width > 0) {
+            int start_x = rough ? max(rect.x() + 1, clipped_rect.x()) : clipped_rect.x();
+            for (int i = 0; i < scale; ++i)
+                fill_physical_scanline_with_draw_op(max_y * scale + i, start_x * scale, width * scale, color);
+        }
         --max_y;
     }
 
@@ -2443,10 +2447,8 @@ void Painter::draw_text_run(FloatPoint baseline_start, Utf8View const& string, F
 
 void Painter::draw_scaled_bitmap_with_transform(IntRect const& dst_rect, Bitmap const& bitmap, FloatRect const& src_rect, AffineTransform const& transform, float opacity, Painter::ScalingMode scaling_mode)
 {
-    if (transform.is_identity_or_translation()) {
-        translate(transform.e(), transform.f());
-        draw_scaled_bitmap(dst_rect, bitmap, src_rect, opacity, scaling_mode);
-        translate(-transform.e(), -transform.f());
+    if (transform.is_identity_or_translation_or_scale()) {
+        draw_scaled_bitmap(transform.map(dst_rect.to_type<float>()).to_rounded<int>(), bitmap, src_rect, opacity, scaling_mode);
     } else {
         // The painter has an affine transform, we have to draw through it!
 

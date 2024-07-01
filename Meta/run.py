@@ -18,6 +18,7 @@ from pathlib import Path
 from shutil import which
 from subprocess import run
 from typing import Any, Callable, Literal
+import shlex
 
 QEMU_MINIMUM_REQUIRED_MAJOR_VERSION = 6
 QEMU_MINIMUM_REQUIRED_MINOR_VERSION = 2
@@ -133,6 +134,7 @@ class Configuration:
     nvme_enable: bool = True
     sd_enable: bool = False
     usb_boot_enable: bool = False
+    virtio_block_enable: bool = False
     screen_count: int = 1
     host_ip: str = "127.0.0.1"
     ethernet_device_type: str = "e1000"
@@ -407,11 +409,10 @@ def set_up_virtualization_support(config: Configuration):
     # even if we couldn't detect it otherwise; this is intended behavior.
     if provided_virtualization_enable is not None:
         config.virtualization_support = provided_virtualization_enable == "1"
-    else:
-        if (config.kvm_usable and config.architecture == Arch.x86_64 and os.uname().machine == Arch.x86_64.value) or (
-            config.qemu_kind == QEMUKind.NativeWindows and config.architecture == Arch.x86_64
-        ):
-            config.virtualization_support = True
+    elif config.architecture == Arch.x86_64 and os.uname().machine == Arch.x86_64.value:
+        # FIXME: Can RISC-V use hardware acceleration?
+        config.virtualization_support = (config.qemu_kind in [QEMUKind.NativeWindows, QEMUKind.MacOS]
+                                         or kvm_usable())
 
     if config.virtualization_support:
         available_accelerators = run(
@@ -428,10 +429,6 @@ def set_up_basic_kernel_cmdline(config: Configuration):
     if provided_cmdline is not None:
         # Split environment variable at spaces, since we don't pass arguments like shell scripts do.
         config.kernel_cmdline.extend(provided_cmdline.split(sep=None))
-
-    # Handle system-specific arguments now, boot type specific arguments are handled later.
-    if config.qemu_kind == QEMUKind.NativeWindows:
-        config.kernel_cmdline.append("disable_virtio")
 
 
 def set_up_disk_image_path(config: Configuration):
@@ -617,12 +614,15 @@ def set_up_boot_drive(config: Configuration):
     provided_nvme_enable = environ.get("SERENITY_NVME_ENABLE")
     if provided_nvme_enable is not None:
         config.nvme_enable = provided_nvme_enable == "1"
-    provided_usb_boot_enable = environ.get("SERENITY_USE_SDCARD")
-    if provided_usb_boot_enable is not None:
-        config.sd_enable = provided_usb_boot_enable == "1"
+    provided_sdcard_enable = environ.get("SERENITY_USE_SDCARD")
+    if provided_sdcard_enable is not None:
+        config.sd_enable = provided_sdcard_enable == "1"
     provided_usb_boot_enable = environ.get("SERENITY_USE_USBDRIVE")
     if provided_usb_boot_enable is not None:
         config.usb_boot_enable = provided_usb_boot_enable == "1"
+    provided_virtio_block_enable = environ.get("SERENITY_USE_VIRTIOBLOCK")
+    if provided_virtio_block_enable is not None:
+        config.virtio_block_enable = provided_virtio_block_enable == "1"
 
     if config.machine_type in [MachineType.MicroVM, MachineType.ISAPC]:
         if config.nvme_enable:
@@ -649,6 +649,10 @@ def set_up_boot_drive(config: Configuration):
         config.add_device("usb-storage,drive=usbstick")
         # FIXME: Find a better way to address the usb drive
         config.kernel_cmdline.append("root=block3:0")
+    elif config.virtio_block_enable:
+        config.boot_drive = f"if=none,id=virtio-root,format=raw,file={config.disk_image}"
+        config.add_device("virtio-blk-pci,drive=virtio-root")
+        config.kernel_cmdline.append("root=lun3:0:0")
     else:
         config.boot_drive = f"file={config.disk_image},format=raw,index=0,media=disk,id=disk"
 
@@ -675,7 +679,7 @@ def set_up_network_hardware(config: Configuration):
     if provided_ethernet_device_type is not None:
         config.ethernet_device_type = provided_ethernet_device_type
 
-    if config.architecture in [Arch.Aarch64, Arch.RISCV64]:
+    if config.architecture == Arch.Aarch64:
         config.network_backend = None
         config.network_default_device = None
     else:
@@ -692,7 +696,7 @@ def set_up_kernel(config: Configuration):
     elif config.architecture == Arch.RISCV64:
         config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Kernel.bin"]
     elif config.architecture == Arch.x86_64:
-        config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Prekernel/Prekernel", "-initrd", "Kernel/Kernel"]
+        config.kernel_and_initrd_arguments = ["-kernel", "Kernel/Kernel"]
 
 
 def set_up_machine_devices(config: Configuration):
@@ -721,13 +725,16 @@ def set_up_machine_devices(config: Configuration):
     elif config.architecture == Arch.RISCV64:
         config.qemu_machine = "virt"
         config.cpu_count = None
-        config.vga_type = None
-        config.display_device = None
-        config.display_backend = None
         config.audio_devices = []
         config.extra_arguments.extend(["-serial", "stdio"])
-        config.kernel_cmdline.append("serial_debug")
+        config.kernel_cmdline.extend(["serial_debug", "nvme_poll"])
         config.qemu_cpu = None
+        config.add_devices(
+            [
+                "virtio-keyboard",
+                "virtio-tablet",
+            ]
+        )
         return
 
     # Machine specific base setups
@@ -830,6 +837,8 @@ def assemble_arguments(config: Configuration) -> list[str | Path]:
         boch_src = Path(config.serenity_src or ".", "Meta/bochsrc")
         return [config.bochs_binary, "-q", "-f", boch_src]
 
+    passed_qemu_args = shlex.split(environ.get("SERENITY_EXTRA_QEMU_ARGS", ""))
+
     return [
         config.qemu_binary or "",
         # Deviate from standard order here:
@@ -855,6 +864,7 @@ def assemble_arguments(config: Configuration) -> list[str | Path]:
         *config.network_default_arguments,
         *config.boot_drive_arguments,
         *config.character_device_arguments,
+        *passed_qemu_args,
     ]
 
 

@@ -178,17 +178,17 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic
     // 17. If parameters is a List of errors, throw a SyntaxError exception.
     if (parameters_parser.has_errors()) {
         auto error = parameters_parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     // 18. Let body be ParseText(StringToCodePoints(bodyString), bodySym).
-    bool contains_direct_call_to_eval = false;
-    auto body_parser = Parser::parse_function_body_from_string(body_string, parse_options, parameters, kind, contains_direct_call_to_eval);
+    FunctionParsingInsights parsing_insights;
+    auto body_parser = Parser::parse_function_body_from_string(body_string, parse_options, parameters, kind, parsing_insights);
 
     // 19. If body is a List of errors, throw a SyntaxError exception.
     if (body_parser.has_errors()) {
         auto error = body_parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     // 20. NOTE: The parameters and body are parsed separately to ensure that each is valid alone. For example, new Function("/*", "*/ ) {") is not legal.
@@ -202,7 +202,7 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic
     // 23. If expr is a List of errors, throw a SyntaxError exception.
     if (source_parser.has_errors()) {
         auto error = source_parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     // 24. Let proto be ? GetPrototypeFromConstructor(newTarget, fallbackProto).
@@ -218,7 +218,8 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic
     PrivateEnvironment* private_environment = nullptr;
 
     // 28. Let F be OrdinaryFunctionCreate(proto, sourceText, parameters, body, non-lexical-this, env, privateEnv).
-    auto function = ECMAScriptFunctionObject::create(realm, "anonymous", *prototype, move(source_text), expr->body(), expr->parameters(), expr->function_length(), expr->local_variables_names(), &environment, private_environment, expr->kind(), expr->is_strict_mode(), expr->might_need_arguments_object(), contains_direct_call_to_eval);
+    parsing_insights.might_need_arguments_object = true;
+    auto function = ECMAScriptFunctionObject::create(realm, "anonymous", *prototype, move(source_text), expr->body(), expr->parameters(), expr->function_length(), expr->local_variables_names(), &environment, private_environment, expr->kind(), expr->is_strict_mode(), parsing_insights);
 
     // FIXME: Remove the name argument from create() and do this instead.
     // 29. Perform SetFunctionName(F, "anonymous").
@@ -226,7 +227,7 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic
     // 30. If kind is generator, then
     if (kind == FunctionKind::Generator) {
         // a. Let prototype be OrdinaryObjectCreate(%GeneratorFunction.prototype.prototype%).
-        prototype = Object::create(realm, realm.intrinsics().generator_function_prototype_prototype());
+        prototype = Object::create_prototype(realm, realm.intrinsics().generator_function_prototype_prototype());
 
         // b. Perform ! DefinePropertyOrThrow(F, "prototype", PropertyDescriptor { [[Value]]: prototype, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false }).
         function->define_direct_property(vm.names.prototype, prototype, Attribute::Writable);
@@ -234,7 +235,7 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic
     // 31. Else if kind is asyncGenerator, then
     else if (kind == FunctionKind::AsyncGenerator) {
         // a. Let prototype be OrdinaryObjectCreate(%AsyncGeneratorFunction.prototype.prototype%).
-        prototype = Object::create(realm, realm.intrinsics().async_generator_function_prototype_prototype());
+        prototype = Object::create_prototype(realm, realm.intrinsics().async_generator_function_prototype_prototype());
 
         // b. Perform ! DefinePropertyOrThrow(F, "prototype", PropertyDescriptor { [[Value]]: prototype, [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false }).
         function->define_direct_property(vm.names.prototype, prototype, Attribute::Writable);
@@ -242,7 +243,7 @@ ThrowCompletionOr<ECMAScriptFunctionObject*> FunctionConstructor::create_dynamic
     // 32. Else if kind is normal, perform MakeConstructor(F).
     else if (kind == FunctionKind::Normal) {
         // FIXME: Implement MakeConstructor
-        prototype = Object::create(realm, realm.intrinsics().object_prototype());
+        prototype = Object::create_prototype(realm, realm.intrinsics().object_prototype());
         prototype->define_direct_property(vm.names.constructor, function, Attribute::Writable | Attribute::Configurable);
         function->define_direct_property(vm.names.prototype, prototype, Attribute::Writable);
     }

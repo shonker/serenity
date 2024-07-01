@@ -175,7 +175,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     Core::ArgsParser args_parser;
     args_parser.set_general_help("Show information from an application crash coredump.");
     args_parser.add_positional_argument(coredump_path, "Coredump path", "coredump-path");
-    args_parser.add_option(unlink_on_exit, "Delete the coredump after its parsed", "unlink", 0);
+    args_parser.add_option(unlink_on_exit, "Delete the coredump after its parsed", "unlink");
     args_parser.parse(arguments);
 
     auto coredump = Coredump::Reader::create(coredump_path);
@@ -317,15 +317,17 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     save_backtrace_button.set_enabled(false);
 
     (void)Threading::BackgroundAction<ThreadBacktracesAndCpuRegisters>::construct(
-        [&, coredump = move(coredump)](auto&) {
+        [&, window = window->make_weak_ptr<GUI::Window>(), coredump = move(coredump)](auto&) {
             ThreadBacktracesAndCpuRegisters results;
             size_t thread_index = 0;
             coredump->for_each_thread_info([&](auto& thread_info) {
                 results.thread_backtraces.append(build_backtrace(*coredump, thread_info, thread_index, [&](size_t frame_index, size_t frame_count) {
                     app->event_loop().deferred_invoke([&, frame_index, frame_count] {
-                        window->set_progress(100.0f * (float)(frame_index + 1) / (float)frame_count);
-                        progressbar.set_value(frame_index + 1);
-                        progressbar.set_max(frame_count);
+                        if (auto strong_window = window.strong_ref(); strong_window && strong_window->is_visible()) {
+                            strong_window->set_progress(100.0f * (float)(frame_index + 1) / (float)frame_count);
+                            progressbar.set_value(frame_index + 1);
+                            progressbar.set_max(frame_count);
+                        }
                     });
                 }));
                 results.thread_cpu_registers.append(build_cpu_registers(thread_info, thread_index));

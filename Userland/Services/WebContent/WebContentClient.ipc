@@ -8,13 +8,11 @@
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/AudioPlayState.h>
 #include <LibWeb/HTML/FileFilter.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/HTML/SelectItem.h>
 #include <LibWeb/HTML/WebViewHints.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWebView/Attribute.h>
-#include <LibWebView/SocketPair.h>
 #include <LibWebView/ProcessHandle.h>
 
 endpoint WebContentClient
@@ -23,7 +21,6 @@ endpoint WebContentClient
 
     did_start_loading(u64 page_id, URL::URL url, bool is_redirect) =|
     did_finish_loading(u64 page_id, URL::URL url) =|
-    did_update_url(u64 page_id, URL::URL url, Web::HTML::HistoryHandlingBehavior history_behavior) =|
     did_request_navigate_back(u64 page_id) =|
     did_request_navigate_forward(u64 page_id) =|
     did_request_refresh(u64 page_id) =|
@@ -31,6 +28,7 @@ endpoint WebContentClient
     did_request_cursor_change(u64 page_id, i32 cursor_type) =|
     did_layout(u64 page_id, Gfx::IntSize content_size) =|
     did_change_title(u64 page_id, ByteString title) =|
+    did_change_url(u64 page_id, URL::URL url) =|
     did_request_scroll(u64 page_id, i32 x_delta, i32 y_delta) =|
     did_request_scroll_to(u64 page_id, Gfx::IntPoint scroll_position) =|
     did_enter_tooltip_area(u64 page_id, Gfx::IntPoint content_position, ByteString title) =|
@@ -83,6 +81,7 @@ endpoint WebContentClient
     did_finish_handling_input_event(u64 page_id, bool event_was_accepted) =|
     did_change_theme_color(u64 page_id, Gfx::Color color) =|
     did_insert_clipboard_entry(u64 page_id, String data, String presentation_style, String mime_type) =|
+    did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled) =|
 
     did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState play_state) =|
 
@@ -91,7 +90,7 @@ endpoint WebContentClient
 
     did_finish_text_test(u64 page_id) =|
 
-    request_worker_agent(u64 page_id) => (WebView::SocketPair sockets) // FIXME: Add required attributes to select a SharedWorker Agent
+    request_worker_agent(u64 page_id) => (IPC::File socket) // FIXME: Add required attributes to select a SharedWorker Agent
 
     inspector_did_load(u64 page_id) =|
     inspector_did_select_dom_node(u64 page_id, i32 node_id, Optional<Web::CSS::Selector::PseudoElement::Type> pseudo_element) =|

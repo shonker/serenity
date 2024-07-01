@@ -35,8 +35,7 @@ Location::~Location() = default;
 void Location::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
-    for (auto& property : m_default_properties)
-        visitor.visit(property);
+    visitor.visit(m_default_properties);
 }
 
 void Location::initialize(JS::Realm& realm)
@@ -336,7 +335,7 @@ WebIDL::ExceptionOr<void> Location::set_hash(String const& value)
     copy_url.set_fragment(String {});
 
     // 6. Basic URL parse input, with copyURL as url and fragment state as state override.
-    auto result_url = URL::Parser::basic_parse(input, {}, copy_url, URL::Parser::State::Fragment);
+    copy_url = URL::Parser::basic_parse(input, {}, copy_url, URL::Parser::State::Fragment);
 
     // 7. If copyURL's fragment is this's url's fragment, then return.
     if (copy_url.fragment() == this->url().fragment())
@@ -484,13 +483,13 @@ JS::ThrowCompletionOr<bool> Location::internal_define_own_property(JS::PropertyK
 }
 
 // 7.10.5.7 [[Get]] ( P, Receiver ), https://html.spec.whatwg.org/multipage/history.html#location-get
-JS::ThrowCompletionOr<JS::Value> Location::internal_get(JS::PropertyKey const& property_key, JS::Value receiver, JS::CacheablePropertyMetadata* cacheable_metadata) const
+JS::ThrowCompletionOr<JS::Value> Location::internal_get(JS::PropertyKey const& property_key, JS::Value receiver, JS::CacheablePropertyMetadata* cacheable_metadata, PropertyLookupPhase phase) const
 {
     auto& vm = this->vm();
 
     // 1. If IsPlatformObjectSameOrigin(this) is true, then return ? OrdinaryGet(this, P, Receiver).
     if (HTML::is_platform_object_same_origin(*this))
-        return JS::Object::internal_get(property_key, receiver, cacheable_metadata);
+        return JS::Object::internal_get(property_key, receiver, cacheable_metadata, phase);
 
     // 2. Return ? CrossOriginGet(this, P, Receiver).
     return HTML::cross_origin_get(vm, static_cast<JS::Object const&>(*this), property_key, receiver);

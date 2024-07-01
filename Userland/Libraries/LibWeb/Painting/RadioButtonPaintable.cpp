@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
-#include <LibGUI/Event.h>
 #include <LibGfx/StylePainter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/BrowsingContext.h>
@@ -16,6 +15,8 @@
 #include <LibWeb/Painting/RadioButtonPaintable.h>
 
 namespace Web::Painting {
+
+JS_DEFINE_ALLOCATOR(RadioButtonPaintable);
 
 JS::NonnullGCPtr<RadioButtonPaintable> RadioButtonPaintable::create(Layout::RadioButton const& layout_box)
 {

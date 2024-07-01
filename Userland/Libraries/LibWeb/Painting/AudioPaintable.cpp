@@ -6,7 +6,6 @@
 
 #include <AK/Array.h>
 #include <AK/NumberFormat.h>
-#include <LibGUI/Event.h>
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/AudioTrackList.h>
@@ -17,6 +16,8 @@
 #include <LibWeb/Painting/BorderRadiusCornerClipper.h>
 
 namespace Web::Painting {
+
+JS_DEFINE_ALLOCATOR(AudioPaintable);
 
 JS::NonnullGCPtr<AudioPaintable> AudioPaintable::create(Layout::AudioBox const& layout_box)
 {

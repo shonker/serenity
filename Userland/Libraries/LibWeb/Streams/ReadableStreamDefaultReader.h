@@ -32,7 +32,8 @@ public:
 };
 
 class ReadLoopReadRequest final : public ReadRequest {
-    JS_CELL(ReadLoopReadRequest, JS::Cell);
+    JS_CELL(ReadLoopReadRequest, ReadRequest);
+    JS_DECLARE_ALLOCATOR(ReadLoopReadRequest);
 
 public:
     // successSteps, which is an algorithm accepting a byte sequence
@@ -41,7 +42,10 @@ public:
     // failureSteps, which is an algorithm accepting a JavaScript value
     using FailureSteps = JS::SafeFunction<void(JS::Value error)>;
 
-    ReadLoopReadRequest(JS::VM& vm, JS::Realm& realm, ReadableStreamDefaultReader& reader, SuccessSteps success_steps, FailureSteps failure_steps);
+    // AD-HOC: callback triggered on every chunk received from the stream.
+    using ChunkSteps = JS::SafeFunction<void(ByteBuffer)>;
+
+    ReadLoopReadRequest(JS::VM& vm, JS::Realm& realm, ReadableStreamDefaultReader& reader, SuccessSteps success_steps, FailureSteps failure_steps, ChunkSteps chunk_steps = {});
 
     virtual void on_chunk(JS::Value chunk) override;
 
@@ -58,6 +62,7 @@ private:
     ByteBuffer m_bytes;
     SuccessSteps m_success_steps;
     FailureSteps m_failure_steps;
+    ChunkSteps m_chunk_steps;
 };
 
 // https://streams.spec.whatwg.org/#readablestreamdefaultreader
@@ -72,12 +77,14 @@ public:
 
     virtual ~ReadableStreamDefaultReader() override = default;
 
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Promise>> read();
+    JS::NonnullGCPtr<JS::Promise> read();
 
-    WebIDL::ExceptionOr<void> read_all_bytes(ReadLoopReadRequest::SuccessSteps, ReadLoopReadRequest::FailureSteps);
-    WebIDL::ExceptionOr<JS::NonnullGCPtr<WebIDL::Promise>> read_all_bytes_deprecated();
+    void read_a_chunk(Fetch::Infrastructure::IncrementalReadLoopReadRequest& read_request);
+    void read_all_bytes(ReadLoopReadRequest::SuccessSteps, ReadLoopReadRequest::FailureSteps);
+    void read_all_chunks(ReadLoopReadRequest::ChunkSteps, ReadLoopReadRequest::SuccessSteps, ReadLoopReadRequest::FailureSteps);
+    JS::NonnullGCPtr<WebIDL::Promise> read_all_bytes_deprecated();
 
-    WebIDL::ExceptionOr<void> release_lock();
+    void release_lock();
 
     SinglyLinkedList<JS::NonnullGCPtr<ReadRequest>>& read_requests() { return m_read_requests; }
 

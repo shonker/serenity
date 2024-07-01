@@ -118,7 +118,7 @@ MonotonicTime TimeManagement::monotonic_time(TimePrecision precision) const
     u64 seconds;
     u32 ticks;
 
-    bool do_query = precision == TimePrecision::Precise && m_can_query_precise_time;
+    bool do_query = precision == TimePrecision::Precise && m_can_query_precise_time.was_set();
 
     u32 update_iteration;
     do {
@@ -380,7 +380,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_x86_non_legacy_hardware_time
     // Use the HPET main counter frequency for time purposes. This is likely
     // a much higher frequency than the interrupt itself and allows us to
     // keep a more accurate time
-    m_can_query_precise_time = true;
+    m_can_query_precise_time.set();
     m_time_ticks_per_second = HPET::the().frequency();
 
     m_system_timer->try_to_set_frequency(m_system_timer->calculate_nearest_possible_frequency(OPTIMAL_TICKS_PER_SECOND_RATE));
@@ -461,7 +461,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_aarch64_hardware_timers()
 {
     m_hardware_timers.append(RPi::Timer::initialize());
     m_system_timer = m_hardware_timers[0];
-    m_time_ticks_per_second = m_system_timer->frequency();
+    m_time_ticks_per_second = m_system_timer->ticks_per_second();
 
     m_system_timer->set_callback([this](RegisterState const& regs) {
         auto seconds_since_boot = m_seconds_since_boot;
@@ -490,7 +490,7 @@ UNMAP_AFTER_INIT bool TimeManagement::probe_and_set_riscv64_hardware_timers()
 {
     m_hardware_timers.append(RISCV64::Timer::initialize());
     m_system_timer = m_hardware_timers[0];
-    m_time_ticks_per_second = m_system_timer->frequency();
+    m_time_ticks_per_second = m_system_timer->ticks_per_second();
 
     m_system_timer->set_callback([this](RegisterState const& regs) {
         auto seconds_since_boot = m_seconds_since_boot;
@@ -525,7 +525,7 @@ void TimeManagement::increment_time_since_boot()
     // Compute time adjustment for adjtime. Let the clock run up to 1% fast or slow.
     // That way, adjtime can adjust up to 36 seconds per hour, without time getting very jumpy.
     // Once we have a smarter NTP service that also adjusts the frequency instead of just slewing time, maybe we can lower this.
-    long nanos_per_tick = 1'000'000'000 / m_time_keeper_timer->frequency();
+    long nanos_per_tick = 1'000'000'000 / m_time_keeper_timer->ticks_per_second();
     time_t max_slew_nanos = nanos_per_tick / 100;
 
     u32 update_iteration = m_update2.fetch_add(1, AK::MemoryOrder::memory_order_acquire);

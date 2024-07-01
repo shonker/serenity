@@ -1,7 +1,9 @@
 #import <Fetch/Request.idl>
 #import <Fetch/Response.idl>
 #import <HighResolutionTime/Performance.idl>
+#import <HTML/ImageBitmap.idl>
 #import <HTML/MessagePort.idl>
+#import <IndexedDB/IDBFactory.idl>
 
 // FIXME: Support VoidFunction in the IDL parser
 callback VoidFunction = undefined ();
@@ -15,7 +17,7 @@ interface mixin WindowOrWorkerGlobalScope {
     readonly attribute boolean isSecureContext;
     readonly attribute boolean crossOriginIsolated;
 
-    // FIXME: undefined reportError(any e);
+    [FIXME] undefined reportError(any e);
 
     // base64 utility methods
     DOMString btoa(DOMString data);
@@ -31,8 +33,8 @@ interface mixin WindowOrWorkerGlobalScope {
     undefined queueMicrotask(VoidFunction callback);
 
     // ImageBitmap
-    // FIXME: Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, optional ImageBitmapOptions options = {});
-    // FIXME: Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, long sx, long sy, long sw, long sh, optional ImageBitmapOptions options = {});
+    Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, optional ImageBitmapOptions options = {});
+    Promise<ImageBitmap> createImageBitmap(ImageBitmapSource image, long sx, long sy, long sw, long sh, optional ImageBitmapOptions options = {});
 
     // structured cloning
     any structuredClone(any value, optional StructuredSerializeOptions options = {});
@@ -42,4 +44,7 @@ interface mixin WindowOrWorkerGlobalScope {
 
     // https://w3c.github.io/hr-time/#the-performance-attribute
     [Replaceable] readonly attribute Performance performance;
+
+    // https://w3c.github.io/IndexedDB/#factory-interface
+    [SameObject] readonly attribute IDBFactory indexedDB;
 };

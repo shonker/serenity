@@ -5,7 +5,6 @@
  */
 
 #include <AK/Array.h>
-#include <LibGUI/Event.h>
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/HTMLMediaElement.h>
@@ -19,6 +18,8 @@ namespace Web::Painting {
 
 static constexpr auto control_box_color = Gfx::Color::from_rgb(0x26'26'26);
 static constexpr auto control_highlight_color = Gfx::Color::from_rgb(0x1d'99'f3);
+
+JS_DEFINE_ALLOCATOR(VideoPaintable);
 
 static constexpr Gfx::Color control_button_color(bool is_hovered)
 {

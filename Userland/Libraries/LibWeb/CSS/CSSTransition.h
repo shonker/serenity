@@ -7,7 +7,6 @@
 #pragma once
 
 #include <LibWeb/Animations/Animation.h>
-#include <LibWeb/Animations/TimingFunction.h>
 #include <LibWeb/CSS/PropertyID.h>
 #include <LibWeb/CSS/StyleValue.h>
 #include <LibWeb/CSS/Time.h>
@@ -16,6 +15,7 @@ namespace Web::CSS {
 
 class CSSTransition : public Animations::Animation {
     WEB_PLATFORM_OBJECT(CSSTransition, Animations::Animation);
+    JS_DECLARE_ALLOCATOR(CSSTransition);
 
 public:
     static JS::NonnullGCPtr<CSSTransition> create(JS::Realm&, PropertyID, size_t transition_generation);

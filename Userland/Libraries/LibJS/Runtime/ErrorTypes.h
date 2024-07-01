@@ -70,6 +70,7 @@
     M(InvalidLength, "Invalid {} length")                                                                                               \
     M(InvalidOrAmbiguousExportEntry, "Invalid or ambiguous export entry '{}'")                                                          \
     M(InvalidPrecision, "Precision must be an integer no less than 1, and no greater than 100")                                         \
+    M(InvalidRestrictedFloatingPointParameter, "Expected {} to be a finite floating-point number")                                      \
     M(InvalidTimeValue, "Invalid time value")                                                                                           \
     M(InvalidRadix, "Radix must be an integer no less than 2, and no greater than 36")                                                  \
     M(IsNotA, "{} is not a {}")                                                                                                         \
@@ -230,6 +231,7 @@
     M(StringNonGlobalRegExp, "RegExp argument is non-global")                                                                           \
     M(StringRawCannotConvert, "Cannot convert property 'raw' to object from {}")                                                        \
     M(StringRepeatCountMustBe, "repeat count must be a {} number")                                                                      \
+    M(StringRepeatCountMustNotOverflow, "repeat count must not overflow")                                                               \
     M(TemporalAmbiguousMonthOfPlainMonthDay, "Accessing month of PlainMonthDay is ambiguous, use monthCode instead")                    \
     M(TemporalDifferentCalendars, "Cannot compare dates from two different calendars")                                                  \
     M(TemporalDifferentTimeZones, "Cannot compare dates from two different time zones")                                                 \

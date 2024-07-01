@@ -78,6 +78,12 @@ private:
     ErrorOr<void> send_message_on_socket(SerializedTransferRecord const&);
     void read_from_socket();
 
+    enum class ParseDecision {
+        NotEnoughData,
+        ParseNextMessage,
+    };
+    ErrorOr<ParseDecision> parse_message();
+
     // The HTML spec implies(!) that this is MessagePort.[[RemotePort]]
     JS::GCPtr<MessagePort> m_remote_port;
 
@@ -85,7 +91,6 @@ private:
     bool m_has_been_shipped { false };
 
     OwnPtr<Core::LocalSocket> m_socket;
-    OwnPtr<Core::LocalSocket> m_fd_passing_socket;
 
     enum class SocketState : u8 {
         Header,
@@ -93,6 +98,8 @@ private:
         Error,
     } m_socket_state { SocketState::Header };
     size_t m_socket_incoming_message_size { 0 };
+    Queue<IPC::File> m_unprocessed_fds;
+    Vector<u8> m_buffered_data;
 
     JS::GCPtr<DOM::EventTarget> m_worker_event_target;
 };

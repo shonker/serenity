@@ -110,7 +110,7 @@ ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_tex
     // b. If script is a List of errors, throw a SyntaxError exception.
     if (parser.has_errors()) {
         auto& error = parser.errors()[0];
-        return vm.throw_completion<SyntaxError>(TRY_OR_THROW_OOM(vm, error.to_string()));
+        return vm.throw_completion<SyntaxError>(error.to_string());
     }
 
     // c. If script Contains ScriptBody is false, return undefined.
@@ -143,7 +143,7 @@ ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_tex
     // NOTE: We don't support this concept yet.
 
     // 9. Let evalContext be a new ECMAScript code execution context.
-    auto eval_context = ExecutionContext::create(vm.heap());
+    auto eval_context = ExecutionContext::create();
 
     // 10. Set evalContext's Function to null.
     eval_context->function = nullptr;
@@ -174,18 +174,18 @@ ThrowCompletionOr<Value> perform_shadow_realm_eval(VM& vm, StringView source_tex
     // 17. If result.[[Type]] is normal, then
     if (!eval_result.is_throw_completion()) {
         // a. Set result to the result of evaluating body.
-        auto maybe_executable = Bytecode::compile(vm, program, {}, FunctionKind::Normal, "ShadowRealmEval"sv);
+        auto maybe_executable = Bytecode::compile(vm, program, FunctionKind::Normal, "ShadowRealmEval"sv);
         if (maybe_executable.is_error())
             result = maybe_executable.release_error();
         else {
             auto executable = maybe_executable.release_value();
 
-            auto value_and_frame = vm.bytecode_interpreter().run_and_return_frame(*executable, nullptr);
-            if (value_and_frame.value.is_error()) {
-                result = value_and_frame.value.release_error();
+            auto result_and_return_register = vm.bytecode_interpreter().run_executable(*executable, {});
+            if (result_and_return_register.value.is_error()) {
+                result = result_and_return_register.value.release_error();
             } else {
                 // Resulting value is in the accumulator.
-                result = value_and_frame.frame->registers()[0].value_or(js_undefined());
+                result = result_and_return_register.return_register_value.value_or(js_undefined());
             }
         }
     }

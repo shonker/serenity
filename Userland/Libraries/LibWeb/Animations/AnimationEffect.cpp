@@ -8,6 +8,7 @@
 #include <LibWeb/Animations/Animation.h>
 #include <LibWeb/Animations/AnimationEffect.h>
 #include <LibWeb/Animations/AnimationTimeline.h>
+#include <LibWeb/Bindings/AnimationEffectPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/Parser/Parser.h>
 #include <LibWeb/DOM/Element.h>
@@ -75,7 +76,7 @@ EffectTiming AnimationEffect::get_timing() const
         .iterations = m_iteration_count,
         .duration = m_iteration_duration,
         .direction = m_playback_direction,
-        .easing = m_easing_function,
+        .easing = m_timing_function.to_string(),
     };
 }
 
@@ -110,7 +111,7 @@ ComputedEffectTiming AnimationEffect::get_computed_timing() const
             .iterations = m_iteration_count,
             .duration = duration,
             .direction = m_playback_direction,
-            .easing = m_easing_function,
+            .easing = m_timing_function.to_string(),
         },
 
         end_time(),
@@ -139,7 +140,16 @@ WebIDL::ExceptionOr<void> AnimationEffect::update_timing(OptionalEffectTiming ti
     //    abort this procedure.
     // Note: "auto", the only valid string value, is treated as 0.
     auto& duration = timing.duration;
-    if (duration.has_value() && duration->has<double>() && (duration->get<double>() < 0.0 || isnan(duration->get<double>())))
+    auto has_valid_duration_value = [&] {
+        if (!duration.has_value())
+            return true;
+        if (duration->has<double>() && (duration->get<double>() < 0.0 || isnan(duration->get<double>())))
+            return false;
+        if (duration->has<String>() && (duration->get<String>() != "auto"))
+            return false;
+        return true;
+    }();
+    if (!has_valid_duration_value)
         return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Invalid duration value"sv };
 
     // 4. If the easing member of input exists but cannot be parsed using the <easing-function> production
@@ -149,6 +159,7 @@ WebIDL::ExceptionOr<void> AnimationEffect::update_timing(OptionalEffectTiming ti
         easing_value = parse_easing_string(realm(), timing.easing.value());
         if (!easing_value)
             return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Invalid easing function"sv };
+        VERIFY(easing_value->is_easing());
     }
 
     // 5. Assign each member that exists in input to the corresponding timing property of effect as follows:
@@ -182,10 +193,8 @@ WebIDL::ExceptionOr<void> AnimationEffect::update_timing(OptionalEffectTiming ti
         m_playback_direction = timing.direction.value();
 
     //    - easing → timing function
-    if (easing_value) {
-        m_easing_function = timing.easing.value();
-        m_timing_function = TimingFunction::from_easing_style_value(easing_value->as_easing());
-    }
+    if (easing_value)
+        m_timing_function = easing_value->as_easing().function();
 
     if (auto animation = m_associated_animation)
         animation->effect_timing_changed({});
@@ -580,7 +589,7 @@ Optional<double> AnimationEffect::transformed_progress() const
 
     // 3. Return the result of evaluating the animation effect’s timing function passing directed progress as the input progress value and
     //    before flag as the before flag.
-    return m_timing_function(directed_progress.value(), before_flag);
+    return m_timing_function.evaluate_at(directed_progress.value(), before_flag);
 }
 
 RefPtr<CSS::StyleValue const> AnimationEffect::parse_easing_string(JS::Realm& realm, StringView value)
@@ -606,6 +615,12 @@ void AnimationEffect::initialize(JS::Realm& realm)
 {
     Base::initialize(realm);
     WEB_SET_PROTOTYPE_FOR_INTERFACE(AnimationEffect);
+}
+
+void AnimationEffect::visit_edges(JS::Cell::Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(m_associated_animation);
 }
 
 }

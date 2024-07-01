@@ -47,7 +47,7 @@ void Request::visit_edges(Cell::Visitor& visitor)
 
 // https://fetch.spec.whatwg.org/#concept-body-mime-type
 // https://fetch.spec.whatwg.org/#ref-for-concept-body-mime-type%E2%91%A0
-ErrorOr<Optional<MimeSniff::MimeType>> Request::mime_type_impl() const
+Optional<MimeSniff::MimeType> Request::mime_type_impl() const
 {
     // Objects including the Body interface mixin need to define an associated MIME type algorithm which takes no arguments and returns failure or a MIME type.
     // A Request object’s MIME type is to return the result of extracting a MIME type from its request’s header list.
@@ -182,13 +182,13 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> Request::construct_impl(JS::Realm
 
     // method
     //     request’s method.
-    request->set_method(TRY_OR_THROW_OOM(vm, ByteBuffer::copy(input_request->method())));
+    request->set_method(MUST(ByteBuffer::copy(input_request->method())));
 
     // header list
     //     A copy of request’s header list.
     auto header_list_copy = Infrastructure::HeaderList::create(vm);
     for (auto& header : *input_request->header_list())
-        TRY_OR_THROW_OOM(vm, header_list_copy->append(header));
+        header_list_copy->append(header);
     request->set_header_list(header_list_copy);
 
     // unsafe-request flag
@@ -373,7 +373,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> Request::construct_impl(JS::Realm
             return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Method must not be one of CONNECT, TRACE, or TRACK"sv };
 
         // 3. Normalize method.
-        method = TRY_OR_THROW_OOM(vm, String::from_utf8(TRY_OR_THROW_OOM(vm, Infrastructure::normalize_method(method.bytes()))));
+        method = MUST(String::from_utf8(Infrastructure::normalize_method(method.bytes())));
 
         // 4. Set request’s method to method.
         request->set_method(MUST(ByteBuffer::copy(method.bytes())));
@@ -383,7 +383,9 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> Request::construct_impl(JS::Realm
     if (init.signal.has_value())
         input_signal = *init.signal;
 
-    // FIXME: 27. If init["priority"] exists, then:
+    // 27. If init["priority"] exists, then:
+    if (init.priority.has_value())
+        request->set_priority(from_bindings_enum(*init.priority));
 
     // 28. Set this’s request to request.
     // NOTE: This is done at the beginning as the 'this' value Request object
@@ -427,7 +429,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> Request::construct_impl(JS::Realm
         // 4. If headers is a Headers object, then for each header of its header list, append header to this’s headers.
         if (auto* header_list = headers.get_pointer<JS::NonnullGCPtr<Infrastructure::HeaderList>>()) {
             for (auto& header : *header_list->ptr())
-                TRY(request_object->headers()->append(TRY_OR_THROW_OOM(vm, Infrastructure::Header::from_string_pair(header.name, header.value))));
+                TRY(request_object->headers()->append(Infrastructure::Header::from_string_pair(header.name, header.value)));
         }
         // 5. Otherwise, fill this’s headers with headers.
         else {
@@ -460,7 +462,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> Request::construct_impl(JS::Realm
 
         // 4. If type is non-null and this’s headers’s header list does not contain `Content-Type`, then append (`Content-Type`, type) to this’s headers.
         if (type.has_value() && !request_object->headers()->header_list()->contains("Content-Type"sv.bytes()))
-            TRY(request_object->headers()->append(TRY_OR_THROW_OOM(vm, Infrastructure::Header::from_string_pair("Content-Type"sv, type->span()))));
+            TRY(request_object->headers()->append(Infrastructure::Header::from_string_pair("Content-Type"sv, type->span())));
     }
 
     // 38. Let inputOrInitBody be initBody if it is non-null; otherwise inputBody.
@@ -503,21 +505,17 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<Request>> Request::construct_impl(JS::Realm
 }
 
 // https://fetch.spec.whatwg.org/#dom-request-method
-WebIDL::ExceptionOr<String> Request::method() const
+String Request::method() const
 {
-    auto& vm = this->vm();
-
     // The method getter steps are to return this’s request’s method.
-    return TRY_OR_THROW_OOM(vm, String::from_utf8(m_request->method()));
+    return MUST(String::from_utf8(m_request->method()));
 }
 
 // https://fetch.spec.whatwg.org/#dom-request-url
-WebIDL::ExceptionOr<String> Request::url() const
+String Request::url() const
 {
-    auto& vm = this->vm();
-
     // The url getter steps are to return this’s request’s URL, serialized.
-    return TRY_OR_THROW_OOM(vm, String::from_byte_string(m_request->url().serialize()));
+    return MUST(String::from_byte_string(m_request->url().serialize()));
 }
 
 // https://fetch.spec.whatwg.org/#dom-request-headers
@@ -535,11 +533,10 @@ Bindings::RequestDestination Request::destination() const
 }
 
 // https://fetch.spec.whatwg.org/#dom-request-referrer
-WebIDL::ExceptionOr<String> Request::referrer() const
+String Request::referrer() const
 {
-    auto& vm = this->vm();
     return m_request->referrer().visit(
-        [&](Infrastructure::Request::Referrer const& referrer) -> WebIDL::ExceptionOr<String> {
+        [&](Infrastructure::Request::Referrer const& referrer) {
             switch (referrer) {
             // 1. If this’s request’s referrer is "no-referrer", then return the empty string.
             case Infrastructure::Request::Referrer::NoReferrer:
@@ -551,9 +548,9 @@ WebIDL::ExceptionOr<String> Request::referrer() const
                 VERIFY_NOT_REACHED();
             }
         },
-        [&](URL::URL const& url) -> WebIDL::ExceptionOr<String> {
+        [&](URL::URL const& url) {
             // 3. Return this’s request’s referrer, serialized.
-            return TRY_OR_THROW_OOM(vm, String::from_byte_string(url.serialize()));
+            return MUST(String::from_byte_string(url.serialize()));
         });
 }
 

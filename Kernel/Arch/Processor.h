@@ -8,6 +8,7 @@
 #pragma once
 
 #include <AK/Function.h>
+#include <AK/SetOnce.h>
 #include <Kernel/Arch/CPUID.h>
 #include <Kernel/Arch/DeferredCallEntry.h>
 #include <Kernel/Arch/DeferredCallPool.h>
@@ -165,8 +166,6 @@ public:
 
     static void deferred_call_queue(Function<void()> callback);
 
-    static void set_thread_specific_data(VirtualAddress thread_specific_data);
-
     [[noreturn]] void initialize_context_switching(Thread& initial_thread);
     NEVER_INLINE void switch_context(Thread*& from_thread, Thread*& to_thread);
     [[noreturn]] static void assume_context(Thread& thread, InterruptsState new_interrupts_state);
@@ -192,12 +191,13 @@ private:
     // FIXME: On aarch64, once there is code in place to differentiate IRQs from synchronous exceptions (syscalls),
     //        this member should be incremented. Also this member shouldn't be a FlatPtr.
     FlatPtr m_in_irq { 0 };
-    volatile u32 m_in_critical;
+    u32 volatile m_in_critical;
     // NOTE: Since these variables are accessed with atomic magic on x86 (through GP with a single load instruction),
     //       they need to be FlatPtrs or everything becomes highly unsound and breaks. They are actually just booleans.
     FlatPtr m_in_scheduler;
     FlatPtr m_invoke_scheduler_async;
-    FlatPtr m_scheduler_initialized;
+
+    SetOnce m_scheduler_initialized;
 
     DeferredCallPool m_deferred_call_pool {};
 };

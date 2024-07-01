@@ -8,7 +8,6 @@
 #pragma once
 
 #include <LibJS/Forward.h>
-#include <LibWeb/Bindings/Forward.h>
 
 namespace Web {
 class EditEventHandler;
@@ -19,6 +18,7 @@ class PageClient;
 class PaintContext;
 class Resource;
 class ResourceLoader;
+enum class TraversalDecision;
 class XMLDocumentBuilder;
 }
 
@@ -61,6 +61,7 @@ enum class RequestCredentials;
 enum class RequestDestination;
 enum class RequestDuplex;
 enum class RequestMode;
+enum class RequestPriority;
 enum class RequestRedirect;
 enum class ResizeObserverBoxOptions;
 enum class ResponseType;
@@ -91,6 +92,7 @@ class AnglePercentage;
 class AngleStyleValue;
 class BackgroundRepeatStyleValue;
 class BackgroundSizeStyleValue;
+class BasicShapeStyleValue;
 class BorderRadiusStyleValue;
 class CSSAnimation;
 class CSSConditionRule;
@@ -124,6 +126,7 @@ class Flex;
 class FlexOrCalculated;
 class FlexStyleValue;
 class FontFace;
+class FontFaceSet;
 class Frequency;
 class FrequencyOrCalculated;
 class FrequencyPercentage;
@@ -158,6 +161,7 @@ class MediaQueryListEvent;
 class Number;
 class NumberOrCalculated;
 class NumberStyleValue;
+class ParsedFontFace;
 class Percentage;
 class PercentageOrCalculated;
 class PercentageStyleValue;
@@ -302,6 +306,7 @@ class FetchController;
 class FetchParams;
 class FetchTimingInfo;
 class HeaderList;
+class IncrementalReadLoopReadRequest;
 class Request;
 class Response;
 
@@ -336,15 +341,19 @@ class BrowsingContextGroup;
 class CanvasRenderingContext2D;
 class ClassicScript;
 class CloseEvent;
+class CloseWatcher;
+class CloseWatcherManager;
 class CustomElementDefinition;
 class CustomElementRegistry;
 class DecodedImageData;
 class DocumentState;
 class DOMParser;
 class DOMStringMap;
+class ElementInternals;
 class ErrorEvent;
 class EventHandler;
 class EventLoop;
+class EventSource;
 class FormAssociatedElement;
 class FormDataEvent;
 class History;
@@ -423,6 +432,7 @@ class HTMLTrackElement;
 class HTMLUListElement;
 class HTMLUnknownElement;
 class HTMLVideoElement;
+class ImageBitmap;
 class ImageData;
 class ImageRequest;
 class ListOfAvailableImages;
@@ -459,6 +469,8 @@ class ToggleEvent;
 class TrackEvent;
 struct TransferDataHolder;
 class TraversableNavigable;
+class UserActivation;
+class ValidityState;
 class VideoTrack;
 class VideoTrackList;
 class Window;
@@ -492,6 +504,12 @@ struct ToggleTaskTracker;
 
 namespace Web::HighResolutionTime {
 class Performance;
+}
+
+namespace Web::IndexedDB {
+class IDBFactory;
+class IDBOpenDBRequest;
+class IDBRequest;
 }
 
 namespace Web::Internals {
@@ -636,6 +654,7 @@ class SVGAnimatedRect;
 class SVGCircleElement;
 class SVGClipPathElement;
 class SVGDefsElement;
+class SVGDescElement;
 class SVGElement;
 class SVGEllipseElement;
 class SVGForeignObjectElement;
@@ -656,6 +675,7 @@ class SVGTitleElement;
 namespace Web::UIEvents {
 class KeyboardEvent;
 class MouseEvent;
+class PointerEvent;
 class UIEvents;
 }
 
@@ -678,12 +698,23 @@ class Table;
 }
 
 namespace Web::WebAudio {
+class AudioBuffer;
 class AudioContext;
+class AudioNode;
+class AudioParam;
+class AudioScheduledSourceNode;
 class BaseAudioContext;
+class DynamicsCompressorNode;
+class GainNode;
+class OfflineAudioContext;
+class OscillatorNode;
+class PeriodicWave;
 
 enum class AudioContextState;
 
 struct AudioContextOptions;
+struct DynamicsCompressorOptions;
+struct OscillatorOptions;
 }
 
 namespace Web::WebGL {

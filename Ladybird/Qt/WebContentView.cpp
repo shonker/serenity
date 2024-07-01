@@ -6,22 +6,19 @@
  */
 
 #include "WebContentView.h"
+#include "Application.h"
 #include "StringUtils.h"
 #include <AK/Assertions.h>
 #include <AK/ByteBuffer.h>
 #include <AK/Format.h>
-#include <AK/HashTable.h>
 #include <AK/LexicalPath.h>
 #include <AK/NonnullOwnPtr.h>
-#include <AK/StringBuilder.h>
 #include <AK/Types.h>
 #include <Kernel/API/KeyCode.h>
 #include <Ladybird/HelperProcess.h>
 #include <Ladybird/Utilities.h>
-#include <LibCore/ArgsParser.h>
 #include <LibCore/EventLoop.h>
 #include <LibCore/Resource.h>
-#include <LibCore/System.h>
 #include <LibCore/Timer.h>
 #include <LibGfx/Bitmap.h>
 #include <LibGfx/Font/FontDatabase.h>
@@ -30,9 +27,8 @@
 #include <LibGfx/Palette.h>
 #include <LibGfx/Rect.h>
 #include <LibGfx/SystemTheme.h>
-#include <LibMain/Main.h>
 #include <LibWeb/Crypto/Crypto.h>
-#include <LibWeb/Loader/ContentFilter.h>
+#include <LibWeb/UIEvents/MouseButton.h>
 #include <LibWeb/Worker/WebWorkerClient.h>
 #include <LibWebView/WebContentClient.h>
 #include <QApplication>
@@ -77,6 +73,14 @@ WebContentView::WebContentView(QWidget* window, WebContentOptions const& web_con
     });
     QObject::connect(horizontalScrollBar(), &QScrollBar::valueChanged, [this](int) {
         update_viewport_rect();
+    });
+
+    QObject::connect(qGuiApp, &QGuiApplication::screenRemoved, [this](QScreen*) {
+        update_screen_rects();
+    });
+
+    QObject::connect(qGuiApp, &QGuiApplication::screenAdded, [this](QScreen*) {
+        update_screen_rects();
     });
 
     initialize_client((parent_client == nullptr) ? CreateNewClient::Yes : CreateNewClient::No);
@@ -126,9 +130,10 @@ WebContentView::WebContentView(QWidget* window, WebContentOptions const& web_con
         finish_handling_key_event(event);
     };
 
-    on_request_worker_agent = [this]() {
-        auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), m_web_content_options.certificates));
-        return worker_client->dup_sockets();
+    on_request_worker_agent = []() {
+        auto& request_server_client = static_cast<Ladybird::Application*>(QApplication::instance())->request_server_client;
+        auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), *request_server_client));
+        return worker_client->dup_socket();
     };
 }
 
@@ -138,34 +143,34 @@ WebContentView::~WebContentView()
         m_client_state.client->unregister_view(m_client_state.page_index);
 }
 
-static GUI::MouseButton get_button_from_qt_event(QSinglePointEvent const& event)
+static Web::UIEvents::MouseButton get_button_from_qt_event(QSinglePointEvent const& event)
 {
     if (event.button() == Qt::MouseButton::LeftButton)
-        return GUI::MouseButton::Primary;
+        return Web::UIEvents::MouseButton::Primary;
     if (event.button() == Qt::MouseButton::RightButton)
-        return GUI::MouseButton::Secondary;
+        return Web::UIEvents::MouseButton::Secondary;
     if (event.button() == Qt::MouseButton::MiddleButton)
-        return GUI::MouseButton::Middle;
+        return Web::UIEvents::MouseButton::Middle;
     if (event.button() == Qt::MouseButton::BackButton)
-        return GUI::MouseButton::Backward;
+        return Web::UIEvents::MouseButton::Backward;
     if (event.buttons() == Qt::MouseButton::ForwardButton)
-        return GUI::MouseButton::Forward;
-    return GUI::MouseButton::None;
+        return Web::UIEvents::MouseButton::Forward;
+    return Web::UIEvents::MouseButton::None;
 }
 
-static GUI::MouseButton get_buttons_from_qt_event(QSinglePointEvent const& event)
+static Web::UIEvents::MouseButton get_buttons_from_qt_event(QSinglePointEvent const& event)
 {
-    auto buttons = GUI::MouseButton::None;
+    auto buttons = Web::UIEvents::MouseButton::None;
     if (event.buttons().testFlag(Qt::MouseButton::LeftButton))
-        buttons |= GUI::MouseButton::Primary;
+        buttons |= Web::UIEvents::MouseButton::Primary;
     if (event.buttons().testFlag(Qt::MouseButton::RightButton))
-        buttons |= GUI::MouseButton::Secondary;
+        buttons |= Web::UIEvents::MouseButton::Secondary;
     if (event.buttons().testFlag(Qt::MouseButton::MiddleButton))
-        buttons |= GUI::MouseButton::Middle;
+        buttons |= Web::UIEvents::MouseButton::Middle;
     if (event.buttons().testFlag(Qt::MouseButton::BackButton))
-        buttons |= GUI::MouseButton::Backward;
+        buttons |= Web::UIEvents::MouseButton::Backward;
     if (event.buttons().testFlag(Qt::MouseButton::ForwardButton))
-        buttons |= GUI::MouseButton::Forward;
+        buttons |= Web::UIEvents::MouseButton::Forward;
     return buttons;
 }
 
@@ -532,13 +537,43 @@ void WebContentView::update_palette(PaletteMode mode)
     client().async_update_system_theme(m_client_state.page_index, make_system_theme_from_qt_palette(*this, mode));
 }
 
+void WebContentView::update_screen_rects()
+{
+    auto screens = QGuiApplication::screens();
+
+    if (!screens.empty()) {
+        Vector<Web::DevicePixelRect> screen_rects;
+        for (auto const& screen : screens) {
+            // NOTE: QScreen::geometry() returns the 'device-independent pixels', we multiply
+            //       by the device pixel ratio to get the 'physical pixels' of the display.
+            auto geometry = screen->geometry();
+            auto device_pixel_ratio = screen->devicePixelRatio();
+            screen_rects.append(Web::DevicePixelRect(geometry.x(), geometry.y(), geometry.width() * device_pixel_ratio, geometry.height() * device_pixel_ratio));
+        }
+
+        // NOTE: The first item in QGuiApplication::screens is always the primary screen.
+        //       This is not specified in the documentation but QGuiApplication::primaryScreen
+        //       always returns the first item in the list if it isn't empty.
+        client().async_update_screen_rects(m_client_state.page_index, screen_rects, 0);
+    }
+}
+
 void WebContentView::initialize_client(WebView::ViewImplementation::CreateNewClient create_new_client)
 {
     if (create_new_client == CreateNewClient::Yes) {
         m_client_state = {};
 
+        Optional<IPC::File> request_server_socket;
+        if (m_web_content_options.use_lagom_networking == UseLagomNetworking::Yes) {
+            auto& protocol = static_cast<Ladybird::Application*>(QApplication::instance())->request_server_client;
+
+            // FIXME: Fail to open the tab, rather than crashing the whole application if this fails
+            auto socket = connect_new_request_server_client(*protocol).release_value_but_fixme_should_propagate_errors();
+            request_server_socket = AK::move(socket);
+        }
+
         auto candidate_web_content_paths = get_paths_for_helper_process("WebContent"sv).release_value_but_fixme_should_propagate_errors();
-        auto new_client = launch_web_content_process(*this, candidate_web_content_paths, m_web_content_options).release_value_but_fixme_should_propagate_errors();
+        auto new_client = launch_web_content_process(*this, candidate_web_content_paths, m_web_content_options, AK::move(request_server_socket)).release_value_but_fixme_should_propagate_errors();
 
         m_client_state.client = new_client;
     } else {
@@ -558,22 +593,7 @@ void WebContentView::initialize_client(WebView::ViewImplementation::CreateNewCli
     update_palette();
     client().async_update_system_fonts(m_client_state.page_index, Gfx::FontDatabase::default_font_query(), Gfx::FontDatabase::fixed_width_font_query(), Gfx::FontDatabase::window_title_font_query());
 
-    auto screens = QGuiApplication::screens();
-
-    if (!screens.empty()) {
-        Vector<Web::DevicePixelRect> screen_rects;
-        for (auto const& screen : screens) {
-            auto geometry = screen->geometry();
-            screen_rects.append(Web::DevicePixelRect(geometry.x(), geometry.y(), geometry.width(), geometry.height()));
-        }
-
-        // FIXME: Update the screens again when QGuiApplication::screenAdded/Removed signals are emitted
-
-        // NOTE: The first item in QGuiApplication::screens is always the primary screen.
-        //       This is not specified in the documentation but QGuiApplication::primaryScreen
-        //       always returns the first item in the list if it isn't empty.
-        client().async_update_screen_rects(m_client_state.page_index, screen_rects, 0);
-    }
+    update_screen_rects();
 
     if (!m_webdriver_content_ipc_path.is_empty())
         client().async_connect_to_webdriver(m_client_state.page_index, m_webdriver_content_ipc_path);

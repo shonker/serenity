@@ -17,6 +17,13 @@ set(SOURCES
 serenity_lib(LibCoreMinimal coreminimal)
 target_link_libraries(LibCoreMinimal PRIVATE LibSystem)
 
+if (SERENITYOS)
+    add_library(DynamicLoader_LibCoreArgsParser 
+        ArgsParser.cpp
+        Version.cpp)
+    target_link_libraries(DynamicLoader_LibCoreArgsParser PUBLIC DynamicLoader_CompileOptions)
+endif()
+
 set(SOURCES
     AnonymousBuffer.cpp
     Command.cpp
@@ -60,13 +67,29 @@ endif()
 
 # FIXME: Implement Core::FileWatcher for *BSD and Windows.
 if (SERENITYOS)
-    list(APPEND SOURCES FileWatcherSerenity.cpp)
+    list(APPEND SOURCES
+        FileWatcherSerenity.cpp
+        Platform/ProcessStatisticsSerenity.cpp
+    )
 elseif (LINUX AND NOT EMSCRIPTEN)
-    list(APPEND SOURCES FileWatcherLinux.cpp)
+    list(APPEND SOURCES
+        FileWatcherLinux.cpp
+        Platform/ProcessStatisticsLinux.cpp
+    )
 elseif (APPLE AND NOT IOS)
-    list(APPEND SOURCES FileWatcherMacOS.mm)
+    list(APPEND SOURCES
+        FileWatcherMacOS.mm
+        Platform/ProcessStatisticsMach.cpp
+    )
 else()
-    list(APPEND SOURCES FileWatcherUnimplemented.cpp)
+    list(APPEND SOURCES
+        FileWatcherUnimplemented.cpp
+        Platform/ProcessStatisticsUnimplemented.cpp
+    )
+endif()
+
+if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "GNU")
+    list(APPEND SOURCES MachPort.cpp)
 endif()
 
 serenity_lib(LibCore core)

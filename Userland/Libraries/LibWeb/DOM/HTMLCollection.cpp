@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLCollectionPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/Element.h>
@@ -46,8 +47,7 @@ void HTMLCollection::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_root);
-    for (auto& element : m_cached_elements)
-        visitor.visit(element);
+    visitor.visit(m_cached_elements);
 }
 
 void HTMLCollection::update_cache_if_needed() const
@@ -61,7 +61,7 @@ void HTMLCollection::update_cache_if_needed() const
         m_root->for_each_in_subtree_of_type<Element>([&](auto& element) {
             if (m_filter(element))
                 m_cached_elements.append(element);
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
     } else {
         m_root->for_each_child_of_type<Element>([&](auto& element) {
@@ -101,23 +101,26 @@ Element* HTMLCollection::item(size_t index) const
 }
 
 // https://dom.spec.whatwg.org/#dom-htmlcollection-nameditem-key
-Element* HTMLCollection::named_item(FlyString const& name) const
+Element* HTMLCollection::named_item(FlyString const& key) const
 {
     // 1. If key is the empty string, return null.
-    if (name.is_empty())
+    if (key.is_empty())
         return nullptr;
 
     update_cache_if_needed();
-    auto const& elements = m_cached_elements;
 
     // 2. Return the first element in the collection for which at least one of the following is true:
-    //      - it has an ID which is key;
-    if (auto it = elements.find_if([&](auto& entry) { return entry->id().has_value() && entry->id().value() == name; }); it != elements.end())
-        return *it;
-    //      - it is in the HTML namespace and has a name attribute whose value is key;
-    if (auto it = elements.find_if([&](auto& entry) { return entry->namespace_uri() == Namespace::HTML && entry->name() == name; }); it != elements.end())
-        return *it;
-    //    or null if there is no such element.
+    for (auto const& element : m_cached_elements) {
+        // - it has an ID which is key;
+        if (element->id() == key)
+            return element;
+
+        // - it is in the HTML namespace and has a name attribute whose value is key;
+        if (element->namespace_uri() == Namespace::HTML && element->name() == key)
+            return element;
+    }
+
+    // or null if there is no such element.
     return nullptr;
 }
 
@@ -132,7 +135,7 @@ Vector<FlyString> HTMLCollection::supported_property_names() const
     for (auto const& element : m_cached_elements) {
         // 1. If element has an ID which is not in result, append element’s ID to result.
         if (auto const& id = element->id(); id.has_value()) {
-            if (!result.contains_slow(id.value()))
+            if (!id.value().is_empty() && !result.contains_slow(id.value()))
                 result.append(id.value());
         }
 

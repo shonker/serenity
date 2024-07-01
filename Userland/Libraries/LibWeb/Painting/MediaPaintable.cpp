@@ -6,7 +6,6 @@
 
 #include <AK/Array.h>
 #include <AK/NumberFormat.h>
-#include <LibGUI/Event.h>
 #include <LibGfx/AntiAliasingPainter.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/HTML/BrowsingContext.h>
@@ -16,6 +15,7 @@
 #include <LibWeb/Page/EventHandler.h>
 #include <LibWeb/Page/Page.h>
 #include <LibWeb/Painting/MediaPaintable.h>
+#include <LibWeb/UIEvents/MouseButton.h>
 
 namespace Web::Painting {
 
@@ -269,7 +269,7 @@ void MediaPaintable::paint_control_bar_volume(PaintContext& context, HTML::HTMLM
 
 MediaPaintable::DispatchEventOfSameName MediaPaintable::handle_mousedown(Badge<EventHandler>, CSSPixelPoint position, unsigned button, unsigned)
 {
-    if (button != GUI::MouseButton::Primary)
+    if (button != UIEvents::MouseButton::Primary)
         return DispatchEventOfSameName::Yes;
 
     auto& media_element = *verify_cast<HTML::HTMLMediaElement>(layout_box().dom_node());
@@ -284,7 +284,7 @@ MediaPaintable::DispatchEventOfSameName MediaPaintable::handle_mousedown(Badge<E
     }
 
     if (media_element.layout_mouse_tracking_component({}).has_value())
-        const_cast<HTML::BrowsingContext&>(browsing_context()).event_handler().set_mouse_event_tracking_paintable(this);
+        const_cast<HTML::Navigable&>(*navigable()).event_handler().set_mouse_event_tracking_paintable(this);
 
     return DispatchEventOfSameName::Yes;
 }
@@ -306,13 +306,13 @@ MediaPaintable::DispatchEventOfSameName MediaPaintable::handle_mouseup(Badge<Eve
             break;
         }
 
-        const_cast<HTML::BrowsingContext&>(browsing_context()).event_handler().set_mouse_event_tracking_paintable(nullptr);
+        const_cast<HTML::Navigable&>(*navigable()).event_handler().set_mouse_event_tracking_paintable(nullptr);
         media_element.set_layout_mouse_tracking_component({}, {});
 
         return DispatchEventOfSameName::Yes;
     }
 
-    if (button != GUI::MouseButton::Primary)
+    if (button != UIEvents::MouseButton::Primary)
         return DispatchEventOfSameName::Yes;
 
     if (cached_layout_boxes.control_box_rect.has_value() && cached_layout_boxes.control_box_rect->contains(position)) {

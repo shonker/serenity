@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/HTMLProgressElementPrototype.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/ElementFactory.h>
 #include <LibWeb/DOM/ShadowRoot.h>
@@ -96,7 +97,7 @@ void HTMLProgressElement::removed_from(DOM::Node*)
 
 void HTMLProgressElement::create_shadow_tree_if_needed()
 {
-    if (shadow_root_internal())
+    if (shadow_root())
         return;
 
     auto shadow_root = heap().allocate<DOM::ShadowRoot>(realm(), document(), *this, Bindings::ShadowRootMode::Closed);

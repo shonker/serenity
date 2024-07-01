@@ -222,7 +222,7 @@ static ErrorOr<bool> parse_and_run(JS::Realm& realm, StringView source, StringVi
             if (!hint.is_empty())
                 outln("{}", hint);
 
-            auto error_string = TRY(error.to_string());
+            auto error_string = error.to_string();
             outln("{}", error_string);
             result = vm.throw_completion<JS::SyntaxError>(move(error_string));
         } else {
@@ -236,7 +236,7 @@ static ErrorOr<bool> parse_and_run(JS::Realm& realm, StringView source, StringVi
             if (!hint.is_empty())
                 outln("{}", hint);
 
-            auto error_string = TRY(error.to_string());
+            auto error_string = error.to_string();
             outln("{}", error_string);
             result = vm.throw_completion<JS::SyntaxError>(move(error_string));
         } else {
@@ -444,13 +444,9 @@ static ErrorOr<void> repl(JS::Realm& realm)
     return {};
 }
 
-static Function<void()> interrupt_interpreter;
-static void sigint_handler()
-{
-    interrupt_interpreter();
-}
-
 class ReplConsoleClient final : public JS::ConsoleClient {
+    JS_CELL(ReplConsoleClient, JS::ConsoleClient);
+
 public:
     ReplConsoleClient(JS::Console& console)
         : ConsoleClient(console)
@@ -497,7 +493,7 @@ public:
 
         auto output = TRY(generically_format_values(arguments.get<JS::MarkedVector<JS::Value>>()));
 #ifdef AK_OS_SERENITY
-        m_console.output_debug_message(log_level, output);
+        m_console->output_debug_message(log_level, output);
 #endif
 
         switch (log_level) {
@@ -603,7 +599,7 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
         signal(SIGINT, [](int) {
             if (!s_editor->is_editing())
-                sigint_handler();
+                exit(0);
             s_editor->save_history(s_history_path.to_byte_string());
         });
 
@@ -812,10 +808,6 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
         ReplConsoleClient console_client(console_object.console());
         console_object.console().set_client(console_client);
         g_vm->heap().set_should_collect_on_every_allocation(gc_on_every_allocation);
-
-        signal(SIGINT, [](int) {
-            sigint_handler();
-        });
 
         StringBuilder builder;
         StringView source_name;

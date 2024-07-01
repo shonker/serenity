@@ -40,10 +40,11 @@ public:
 
     virtual bool is_focusable() const override { return true; }
 
-    void queue_a_media_element_task(JS::SafeFunction<void()> steps);
+    // NOTE: The function is wrapped in a JS::HeapFunction immediately.
+    void queue_a_media_element_task(Function<void()>);
 
     JS::GCPtr<MediaError> error() const { return m_error; }
-    WebIDL::ExceptionOr<void> set_decoder_error(String error_message);
+    void set_decoder_error(String error_message);
 
     String const& current_src() const { return m_current_src; }
     WebIDL::ExceptionOr<void> select_resource();
@@ -58,7 +59,7 @@ public:
 
     [[nodiscard]] JS::NonnullGCPtr<TimeRanges> buffered() const;
 
-    WebIDL::ExceptionOr<Bindings::CanPlayTypeResult> can_play_type(StringView type) const;
+    Bindings::CanPlayTypeResult can_play_type(StringView type) const;
 
     enum class ReadyState : u16 {
         HaveNothing,
@@ -161,7 +162,7 @@ private:
     Task::Source media_element_event_task_source() const { return m_media_element_event_task_source.source; }
 
     WebIDL::ExceptionOr<void> load_element();
-    WebIDL::ExceptionOr<void> fetch_resource(URL::URL const&, Function<void(String)> failure_callback);
+    WebIDL::ExceptionOr<void> fetch_resource(URL::URL const&, ESCAPING Function<void(String)> failure_callback);
     static bool verify_response(JS::NonnullGCPtr<Fetch::Infrastructure::Response>, ByteRange const&);
     WebIDL::ExceptionOr<void> process_media_data(Function<void(String)> failure_callback);
     WebIDL::ExceptionOr<void> handle_media_source_failure(Span<JS::NonnullGCPtr<WebIDL::Promise>> promises, String error_message);

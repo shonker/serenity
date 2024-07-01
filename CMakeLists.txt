@@ -18,7 +18,7 @@ endif()
 
 # Check for toolchain mismatch, user might need to rebuild toolchain
 set(GCC_VERSION "13.2.0")
-set(LLVM_VERSION "16.0.6")
+set(LLVM_VERSION "18.1.3")
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(EXPECTED_COMPILER_VERSION "${GCC_VERSION}")
 else()
@@ -205,6 +205,13 @@ if (HACKSTUDIO_BUILD)
     include_directories(/usr/include/Userland/Services)
     include(${HACKSTUDIO_BUILD_CMAKE_FILE})
     return()
+endif()
+
+add_library(GenericClangPlugin INTERFACE)
+add_library(JSClangPlugin INTERFACE)
+if (ENABLE_CLANG_PLUGINS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
+    target_link_libraries(GenericClangPlugin INTERFACE Lagom::GenericClangPlugin)
+    target_link_libraries(JSClangPlugin INTERFACE Lagom::JSClangPlugin)
 endif()
 
 add_subdirectory(AK)

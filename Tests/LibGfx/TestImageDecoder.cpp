@@ -22,8 +22,10 @@
 #include <LibGfx/ImageFormats/PGMLoader.h>
 #include <LibGfx/ImageFormats/PNGLoader.h>
 #include <LibGfx/ImageFormats/PPMLoader.h>
+#include <LibGfx/ImageFormats/QMArithmeticDecoder.h>
 #include <LibGfx/ImageFormats/TGALoader.h>
 #include <LibGfx/ImageFormats/TIFFLoader.h>
+#include <LibGfx/ImageFormats/TIFFMetadata.h>
 #include <LibGfx/ImageFormats/TinyVGLoader.h>
 #include <LibGfx/ImageFormats/WebPLoader.h>
 #include <LibTest/TestCase.h>
@@ -318,14 +320,6 @@ TEST_CASE(test_ilbm_malformed_frame)
     }
 }
 
-TEST_CASE(test_jbig2_size)
-{
-    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jbig2/bitmap.jbig2"sv)));
-    EXPECT(Gfx::JBIG2ImageDecoderPlugin::sniff(file->bytes()));
-    auto plugin_decoder = TRY_OR_FAIL(Gfx::JBIG2ImageDecoderPlugin::create(file->bytes()));
-    EXPECT_EQ(plugin_decoder->size(), Gfx::IntSize(399, 400));
-}
-
 TEST_CASE(test_jbig2_black_47x23)
 {
     auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jbig2/black_47x23.jbig2"sv)));
@@ -356,15 +350,24 @@ TEST_CASE(test_jbig2_decode)
 
     Array test_inputs = {
         TEST_INPUT("jbig2/bitmap.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-tpgdon.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-customat-tpgdon.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template1.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-template1-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template1-tpgdon.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-template1-customat-tpgdon.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template2.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-template2-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template2-tpgdon.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-template2-customat-tpgdon.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template3.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-template3-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-template3-tpgdon.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-template3-customat-tpgdon.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textrefine.jbig2"sv),
+        TEST_INPUT("jbig2/bitmap-symbol-textrefine-customat.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-symbolrefine.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textbottomleft.jbig2"sv),
         TEST_INPUT("jbig2/bitmap-symbol-textbottomlefttranspose.jbig2"sv),
@@ -388,7 +391,7 @@ TEST_CASE(test_jbig2_decode)
     }
 }
 
-TEST_CASE(test_jbig2_arithmetic_decoder)
+TEST_CASE(test_qm_arithmetic_decoder)
 {
     // https://www.itu.int/rec/T-REC-T.88-201808-I
     // H.2 Test sequence for arithmetic coder
@@ -408,8 +411,8 @@ TEST_CASE(test_jbig2_arithmetic_decoder)
     // clang-format on
 
     // "For this entire test, a single value of CX is used. I(CX) is initially 0 and MPS(CX) is initially 0."
-    Gfx::JBIG2::ArithmeticDecoder::Context context { 0, 0 };
-    auto decoder = MUST(Gfx::JBIG2::ArithmeticDecoder::initialize(input));
+    Gfx::QMArithmeticDecoder::Context context { 0, 0 };
+    auto decoder = MUST(Gfx::QMArithmeticDecoder::initialize(input));
 
     for (auto expected : output) {
         u8 actual = 0;
@@ -578,6 +581,30 @@ TEST_CASE(test_jpeg_malformed_frame)
     }
 }
 
+TEST_CASE(test_jpeg2000_spec_annex_j_10)
+{
+    // J.10 An example of decoding showing intermediate steps
+    // clang-format off
+    constexpr Array data = to_array<u8>({
+        0xFF, 0x4F, 0xFF, 0x51, 0x00, 0x29, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x09,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x09,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x01, 0xFF, 0x5C, 0x00,
+        0x07, 0x40, 0x40, 0x48, 0x48, 0x50, 0xFF, 0x52, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01,
+        0x04, 0x04, 0x00, 0x01, 0xFF, 0x90, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E, 0x00, 0x01,
+        0xFF, 0x93, 0xC7, 0xd4, 0x0C, 0x01, 0x8F, 0x0D, 0xC8, 0x75, 0x5D, 0xC0, 0x7C, 0x21, 0x80, 0x0F,
+        0xB1, 0x76, 0xFF, 0xD9,
+    });
+    // clang-format on
+
+    auto plugin_decoder = TRY_OR_FAIL(Gfx::JPEG2000ImageDecoderPlugin::create(data));
+    EXPECT_EQ(plugin_decoder->size(), Gfx::IntSize(1, 9));
+
+    // FIXME: Do something with this.
+    // For now, this is useful for debugging:
+    // `Build/lagom/bin/TestImageDecoder test_jpeg2000_spec_annex_j_10` prints internal state with JPEG2000_DEBUG=1.
+    (void)plugin_decoder->frame(0);
+}
+
 TEST_CASE(test_jpeg2000_simple)
 {
     auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("jpeg2000/simple.jp2"sv)));
@@ -603,6 +630,86 @@ TEST_CASE(test_jpeg2000_gray)
     auto icc_bytes = MUST(plugin_decoder->icc_data());
     EXPECT(icc_bytes.has_value());
     EXPECT_EQ(icc_bytes->size(), 912u);
+}
+
+TEST_CASE(test_jpeg2000_tag_tree)
+{
+    {
+        // The example from the NOTE at the end of B.10.2 Tag trees:
+        auto tree = TRY_OR_FAIL(Gfx::JPEG2000::TagTree::create(6, 3));
+        auto bits = to_array<u8>({
+            0, 1, 1, 1, 1, // q3(0, 0)
+            0, 0, 1,       // q3(1, 0)
+            1, 0, 1,       // q3(2, 0)
+        });
+        size_t index = 0;
+        Function<ErrorOr<bool>()> read_bit = [&]() -> bool {
+            return bits[index++];
+        };
+        EXPECT_EQ(1u, MUST(tree.read_value(0, 0, read_bit)));
+        EXPECT_EQ(index, 5u);
+        EXPECT_EQ(3u, MUST(tree.read_value(1, 0, read_bit)));
+        EXPECT_EQ(index, 8u);
+        EXPECT_EQ(2u, MUST(tree.read_value(2, 0, read_bit)));
+        EXPECT_EQ(index, 11u);
+    }
+
+    {
+        // The inclusion tag tree bits from Table B.5 – Example packet header bit stream.
+        auto tree = TRY_OR_FAIL(Gfx::JPEG2000::TagTree::create(3, 2));
+        auto bits = to_array<u8>({
+            1, 1, 1, // Code-block 0, 0 included for the first time (partial inclusion tag tree)
+            1,       // Code-block 1, 0 included for the first time (partial inclusion tag tree)
+            0,       // Code-block 2, 0 not yet included (partial tag tree)
+            0,       // Code-block 0, 1 not yet included
+            0,       // Code-block 1, 2 not yet included
+            // Code-block 2, 1 not yet included (no data needed, already conveyed by partial tag tree for code-block 2, 0)
+        });
+        size_t index = 0;
+        Function<ErrorOr<bool>()> read_bit = [&]() -> bool {
+            return bits[index++];
+        };
+        u32 next_layer = 1;
+        EXPECT_EQ(0u, MUST(tree.read_value(0, 0, read_bit, next_layer)));
+        EXPECT_EQ(index, 3u);
+        EXPECT_EQ(0u, MUST(tree.read_value(1, 0, read_bit, next_layer)));
+        EXPECT_EQ(index, 4u);
+        EXPECT_EQ(1u, MUST(tree.read_value(2, 0, read_bit, next_layer)));
+        EXPECT_EQ(index, 5u);
+        EXPECT_EQ(1u, MUST(tree.read_value(0, 1, read_bit, next_layer)));
+        EXPECT_EQ(index, 6u);
+        EXPECT_EQ(1u, MUST(tree.read_value(1, 1, read_bit, next_layer)));
+        EXPECT_EQ(index, 7u);
+        EXPECT_EQ(1u, MUST(tree.read_value(2, 1, read_bit, next_layer)));
+        EXPECT_EQ(index, 7u); // Didn't change!
+    }
+
+    {
+        // This isn't in the spec. If one dimension is 2^n + 1 and the other side is just 1, then the topmost node will have
+        // 2^n x 1 and 1 x 1 children. The first child will have n levels of children. The 1 x 1 child could end immediately,
+        // or it could require that it also has n levels of (all 1 x 1) children. The spec isn't clear on which of
+        // the two alternatives should happen. We currently have n levels of 1 x 1 blocks.
+        constexpr auto n = 5;
+        auto tree = TRY_OR_FAIL(Gfx::JPEG2000::TagTree::create((1 << n) + 1, 1));
+        Vector<u8> bits;
+        bits.append(1); // Finalize topmost node.
+        bits.append(0); // Increment value in 1 x 1 child.
+        bits.append(1); // Finalize 1 x 1 child.
+
+        // Finalize further 1 x 1 children, if present.
+        for (size_t i = 0; i < n; ++i)
+            bits.append(1);
+
+        size_t index = 0;
+        Function<ErrorOr<bool>()> read_bit = [&]() -> bool {
+            return bits[index++];
+        };
+
+        EXPECT_EQ(1u, MUST(tree.read_value(1 << n, 0, read_bit)));
+
+        // This will read either 3 or 3 + n bits, depending on the interpretation.
+        EXPECT_EQ(index, 3u + n);
+    }
 }
 
 TEST_CASE(test_pam_rgb)
@@ -660,6 +767,18 @@ TEST_CASE(test_png)
     auto plugin_decoder = TRY_OR_FAIL(Gfx::PNGImageDecoderPlugin::create(file->bytes()));
 
     TRY_OR_FAIL(expect_single_frame(*plugin_decoder));
+}
+
+TEST_CASE(test_exif)
+{
+    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("png/exif.png"sv)));
+    EXPECT(Gfx::PNGImageDecoderPlugin::sniff(file->bytes()));
+    auto plugin_decoder = TRY_OR_FAIL(Gfx::PNGImageDecoderPlugin::create(file->bytes()));
+
+    TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 100, 200 }));
+    EXPECT(plugin_decoder->metadata().has_value());
+    auto const& exif_metadata = static_cast<Gfx::ExifMetadata const&>(plugin_decoder->metadata().value());
+    EXPECT_EQ(*exif_metadata.orientation(), Gfx::TIFF::Orientation::Rotate90Clockwise);
 }
 
 TEST_CASE(test_png_malformed_frame)
@@ -756,6 +875,20 @@ TEST_CASE(test_tiff_ccitt3)
 
     EXPECT_EQ(frame.image->get_pixel(0, 0), Gfx::Color::NamedColor::White);
     EXPECT_EQ(frame.image->get_pixel(60, 75), Gfx::Color::NamedColor::Black);
+}
+
+TEST_CASE(test_tiff_ccitt3_no_tags)
+{
+    auto file = TRY_OR_FAIL(Core::MappedFile::map(TEST_INPUT("tiff/ccitt3_no_tags.tiff"sv)));
+    EXPECT(Gfx::TIFFImageDecoderPlugin::sniff(file->bytes()));
+    auto plugin_decoder = TRY_OR_FAIL(Gfx::TIFFImageDecoderPlugin::create(file->bytes()));
+
+    auto frame = TRY_OR_FAIL(expect_single_frame_of_size(*plugin_decoder, { 6, 4 }));
+
+    EXPECT_EQ(frame.image->get_pixel(0, 0), Gfx::Color::NamedColor::White);
+    EXPECT_EQ(frame.image->get_pixel(3, 0), Gfx::Color::NamedColor::Black);
+    EXPECT_EQ(frame.image->get_pixel(2, 2), Gfx::Color::NamedColor::White);
+    EXPECT_EQ(frame.image->get_pixel(5, 3), Gfx::Color::NamedColor::White);
 }
 
 TEST_CASE(test_tiff_ccitt3_fill)
@@ -1248,9 +1381,9 @@ TEST_CASE(test_webp_extended_lossless_animated)
     EXPECT(Gfx::WebPImageDecoderPlugin::sniff(file->bytes()));
     auto plugin_decoder = TRY_OR_FAIL(Gfx::WebPImageDecoderPlugin::create(file->bytes()));
 
+    EXPECT_EQ(plugin_decoder->loop_count(), 42u);
     EXPECT_EQ(plugin_decoder->frame_count(), 8u);
     EXPECT(plugin_decoder->is_animated());
-    EXPECT_EQ(plugin_decoder->loop_count(), 42u);
 
     EXPECT_EQ(plugin_decoder->size(), Gfx::IntSize(990, 1050));
 

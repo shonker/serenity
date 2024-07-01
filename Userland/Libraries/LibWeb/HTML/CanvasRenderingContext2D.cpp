@@ -16,6 +16,7 @@
 #include <LibWeb/HTML/CanvasRenderingContext2D.h>
 #include <LibWeb/HTML/HTMLCanvasElement.h>
 #include <LibWeb/HTML/HTMLImageElement.h>
+#include <LibWeb/HTML/ImageBitmap.h>
 #include <LibWeb/HTML/ImageData.h>
 #include <LibWeb/HTML/Path2D.h>
 #include <LibWeb/HTML/TextMetrics.h>
@@ -374,13 +375,13 @@ void CanvasRenderingContext2D::fill(Path2D& path, StringView fill_rule)
     return fill_internal(transformed_path, parse_fill_rule(fill_rule));
 }
 
-WebIDL::ExceptionOr<JS::NonnullGCPtr<ImageData>> CanvasRenderingContext2D::create_image_data(int width, int height) const
+WebIDL::ExceptionOr<JS::NonnullGCPtr<ImageData>> CanvasRenderingContext2D::create_image_data(int width, int height, Optional<ImageDataSettings> const& settings) const
 {
-    return ImageData::create(realm(), width, height);
+    return ImageData::create(realm(), width, height, settings);
 }
 
 // https://html.spec.whatwg.org/multipage/canvas.html#dom-context-2d-getimagedata
-WebIDL::ExceptionOr<JS::GCPtr<ImageData>> CanvasRenderingContext2D::get_image_data(int x, int y, int width, int height) const
+WebIDL::ExceptionOr<JS::GCPtr<ImageData>> CanvasRenderingContext2D::get_image_data(int x, int y, int width, int height, Optional<ImageDataSettings> const& settings) const
 {
     // 1. If either the sw or sh arguments are zero, then throw an "IndexSizeError" DOMException.
     if (width == 0 || height == 0)
@@ -392,7 +393,7 @@ WebIDL::ExceptionOr<JS::GCPtr<ImageData>> CanvasRenderingContext2D::get_image_da
 
     // 3. Let imageData be a new ImageData object.
     // 4. Initialize imageData given sw, sh, settings set to settings, and defaultColorSpace set to this's color space.
-    auto image_data = TRY(ImageData::create(realm(), width, height));
+    auto image_data = TRY(ImageData::create(realm(), width, height, settings));
 
     // NOTE: We don't attempt to create the underlying bitmap here; if it doesn't exist, it's like copying only transparent black pixels (which is a no-op).
     if (!canvas_element().bitmap())
@@ -514,7 +515,7 @@ CanvasRenderingContext2D::PreparedText CanvasRenderingContext2D::prepare_text(By
     for (auto c : text) {
         builder.append(Infra::is_ascii_whitespace(c) ? ' ' : c);
     }
-    auto replaced_text = builder.to_byte_string();
+    auto replaced_text = builder.string_view();
 
     // 3. Let font be the current font of target, as given by that object's font attribute.
     auto font = current_font();
@@ -636,6 +637,14 @@ WebIDL::ExceptionOr<CanvasImageSourceUsability> check_usability_of_image(CanvasI
             if (canvas_element->width() == 0 || canvas_element->height() == 0)
                 return WebIDL::InvalidStateError::create(canvas_element->realm(), "Canvas width or height is zero"_fly_string);
             return Optional<CanvasImageSourceUsability> {};
+        },
+
+        // ImageBitmap
+        // FIXME: VideoFrame
+        [](JS::Handle<ImageBitmap> const& image_bitmap) -> WebIDL::ExceptionOr<Optional<CanvasImageSourceUsability>> {
+            if (image_bitmap->is_detached())
+                return WebIDL::InvalidStateError::create(image_bitmap->realm(), "Image bitmap is detached"_fly_string);
+            return Optional<CanvasImageSourceUsability> {};
         }));
     if (usability.has_value())
         return usability.release_value();
@@ -659,8 +668,7 @@ bool image_is_not_origin_clean(CanvasImageSource const& image)
         // image's media data is CORS-cross-origin.
 
         // HTMLCanvasElement
-        // FIXME: ImageBitmap
-        [](JS::Handle<HTMLCanvasElement> const&) {
+        [](OneOf<JS::Handle<HTMLCanvasElement>, JS::Handle<ImageBitmap>> auto const&) {
             // FIXME: image's bitmap's origin-clean flag is false.
             return false;
         });

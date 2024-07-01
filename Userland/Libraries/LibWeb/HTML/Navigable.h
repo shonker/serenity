@@ -21,6 +21,7 @@
 #include <LibWeb/HTML/SourceSnapshotParams.h>
 #include <LibWeb/HTML/StructuredSerialize.h>
 #include <LibWeb/HTML/TokenizedFeatures.h>
+#include <LibWeb/Page/EventHandler.h>
 #include <LibWeb/PixelUnits.h>
 #include <LibWeb/XHR/FormDataEntry.h>
 
@@ -59,6 +60,7 @@ public:
 
     String const& id() const { return m_id; }
     JS::GCPtr<Navigable> parent() const { return m_parent; }
+    bool is_ancestor_of(JS::NonnullGCPtr<Navigable>) const;
 
     bool is_closing() const { return m_closing; }
     void set_closing(bool value) { m_closing = value; }
@@ -92,6 +94,8 @@ public:
 
     virtual bool is_top_level_traversable() const { return false; }
 
+    [[nodiscard]] bool is_focused() const;
+
     enum class WindowType {
         ExistingOrNone,
         NewAndUnrestricted,
@@ -103,7 +107,7 @@ public:
         WindowType window_type;
     };
 
-    ChosenNavigable choose_a_navigable(StringView name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes);
+    ChosenNavigable choose_a_navigable(StringView name, TokenizedFeature::NoOpener no_opener, ActivateTab = ActivateTab::Yes, Optional<TokenizedFeature::Map const&> window_features = {});
 
     static JS::GCPtr<Navigable> navigable_with_active_document(JS::NonnullGCPtr<DOM::Document>);
 
@@ -119,10 +123,10 @@ public:
         SourceSnapshotParams const& source_snapshot_params,
         TargetSnapshotParams const& target_snapshot_params,
         Optional<String> navigation_id = {},
-        Variant<Empty, NavigationParams, NonFetchSchemeNavigationParams> navigation_params = Empty {},
+        Variant<Empty, JS::NonnullGCPtr<NavigationParams>, JS::NonnullGCPtr<NonFetchSchemeNavigationParams>> navigation_params = Empty {},
         CSPNavigationType csp_navigation_type = CSPNavigationType::Other,
         bool allow_POST = false,
-        Function<void()> completion_steps = [] {});
+        JS::SafeFunction<void()> completion_steps = [] {});
 
     struct NavigateParams {
         URL::URL const& url;
@@ -182,8 +186,27 @@ public:
     };
     void paint(Painting::RecordingPainter&, PaintConfig);
 
+    Page& page() { return m_page; }
+    Page const& page() const { return m_page; }
+
+    String selected_text() const;
+    void select_all();
+    void paste(String const&);
+
+    Web::EventHandler& event_handler() { return m_event_handler; }
+    Web::EventHandler const& event_handler() const { return m_event_handler; }
+
+    void did_edit(Badge<EditEventHandler>);
+
+    JS::GCPtr<DOM::Position> cursor_position() const { return m_cursor_position; }
+    void set_cursor_position(JS::NonnullGCPtr<DOM::Position>);
+    bool increment_cursor_position_offset();
+    bool decrement_cursor_position_offset();
+
+    bool cursor_blink_state() const { return m_cursor_blink_state; }
+
 protected:
-    Navigable();
+    explicit Navigable(JS::NonnullGCPtr<Page>);
 
     virtual void visit_edges(Cell::Visitor&) override;
 
@@ -194,6 +217,8 @@ protected:
     TokenizedFeature::Popup m_is_popup { TokenizedFeature::Popup::No };
 
 private:
+    void reset_cursor_blink_cycle();
+
     void scroll_offset_did_change();
 
     void inform_the_navigation_api_about_aborting_navigation();
@@ -219,12 +244,20 @@ private:
     // Implied link between navigable and its container.
     JS::GCPtr<NavigableContainer> m_container;
 
+    JS::NonnullGCPtr<Page> m_page;
+
     bool m_has_been_destroyed { false };
 
     CSSPixelSize m_size;
     CSSPixelPoint m_viewport_scroll_offset;
 
     bool m_needs_repaint { false };
+
+    Web::EventHandler m_event_handler;
+
+    JS::GCPtr<DOM::Position> m_cursor_position;
+    RefPtr<Core::Timer> m_cursor_blink_timer;
+    bool m_cursor_blink_state { false };
 };
 
 HashTable<Navigable*>& all_navigables();

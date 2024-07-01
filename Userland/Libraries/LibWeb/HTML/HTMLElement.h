@@ -42,6 +42,9 @@ public:
     String inner_text();
     void set_inner_text(StringView);
 
+    [[nodiscard]] String outer_text();
+    WebIDL::ExceptionOr<void> set_outer_text(String);
+
     int offset_top() const;
     int offset_left() const;
     int offset_width() const;
@@ -50,8 +53,7 @@ public:
 
     bool cannot_navigate() const;
 
-    DOMStringMap* dataset() { return m_dataset.ptr(); }
-    DOMStringMap const* dataset() const { return m_dataset.ptr(); }
+    [[nodiscard]] JS::NonnullGCPtr<DOMStringMap> dataset();
 
     void focus();
 
@@ -59,15 +61,21 @@ public:
 
     void blur();
 
+    [[nodiscard]] String access_key_label() const;
+
     bool fire_a_synthetic_pointer_event(FlyString const& type, DOM::Element& target, bool not_trusted);
 
     // https://html.spec.whatwg.org/multipage/forms.html#category-label
     virtual bool is_labelable() const { return false; }
 
+    JS::GCPtr<DOM::NodeList> labels();
+
     virtual Optional<ARIA::Role> default_role() const override;
 
     String get_an_elements_target() const;
     TokenizedFeature::NoOpener get_an_elements_noopener(StringView target) const;
+
+    WebIDL::ExceptionOr<JS::NonnullGCPtr<ElementInternals>> attach_internals();
 
 protected:
     HTMLElement(DOM::Document&, DOM::QualifiedName);
@@ -85,7 +93,14 @@ private:
     virtual JS::GCPtr<DOM::EventTarget> global_event_handlers_to_event_target(FlyString const&) override { return *this; }
     virtual void did_receive_focus() override;
 
+    [[nodiscard]] String get_the_text_steps();
+
     JS::GCPtr<DOMStringMap> m_dataset;
+
+    JS::GCPtr<DOM::NodeList> m_labels;
+
+    // https://html.spec.whatwg.org/multipage/custom-elements.html#attached-internals
+    JS::GCPtr<ElementInternals> m_attached_internals;
 
     enum class ContentEditableState {
         True,

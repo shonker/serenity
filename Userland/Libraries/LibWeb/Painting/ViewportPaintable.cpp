@@ -14,6 +14,8 @@
 
 namespace Web::Painting {
 
+JS_DEFINE_ALLOCATOR(ViewportPaintable);
+
 JS::NonnullGCPtr<ViewportPaintable> ViewportPaintable::create(Layout::Viewport const& layout_viewport)
 {
     return layout_viewport.heap().allocate_without_realm<ViewportPaintable>(layout_viewport);
@@ -72,7 +74,7 @@ void ViewportPaintable::assign_scroll_frames()
         if (paintable_box.has_scrollable_overflow()) {
             auto scroll_frame = adopt_ref(*new ScrollFrame());
             scroll_frame->id = next_id++;
-            scroll_state.set(&paintable_box, move(scroll_frame));
+            scroll_state.set(paintable_box, move(scroll_frame));
         }
         return TraversalDecision::Continue;
     });
@@ -102,7 +104,7 @@ void ViewportPaintable::assign_clip_frames()
         auto has_hidden_overflow = overflow_x != CSS::Overflow::Visible && overflow_y != CSS::Overflow::Visible;
         if (has_hidden_overflow || paintable_box.get_clip_rect().has_value()) {
             auto clip_frame = adopt_ref(*new ClipFrame());
-            clip_state.set(&paintable_box, move(clip_frame));
+            clip_state.set(paintable_box, move(clip_frame));
         }
         return TraversalDecision::Continue;
     });
@@ -126,6 +128,10 @@ void ViewportPaintable::assign_clip_frames()
 
 void ViewportPaintable::refresh_scroll_state()
 {
+    if (!m_needs_to_refresh_scroll_state)
+        return;
+    m_needs_to_refresh_scroll_state = false;
+
     for (auto& it : scroll_state) {
         auto const& paintable_box = *it.key;
         auto& scroll_frame = *it.value;
@@ -140,6 +146,10 @@ void ViewportPaintable::refresh_scroll_state()
 
 void ViewportPaintable::refresh_clip_state()
 {
+    if (!m_needs_to_refresh_clip_state)
+        return;
+    m_needs_to_refresh_clip_state = false;
+
     for (auto& it : clip_state) {
         auto const& paintable_box = *it.key;
         auto& clip_frame = *it.value;
@@ -438,6 +448,16 @@ void ViewportPaintable::resolve_paint_only_properties()
             inline_paintable.set_outline_offset(outline_offset);
         }
 
+        if (is_paintable_box) {
+            auto& paintable_box = static_cast<Painting::PaintableBox&>(paintable);
+            auto combined_transform = paintable.compute_combined_css_transform();
+            paintable_box.set_combined_css_transform(combined_transform);
+        } else if (is_inline_paintable) {
+            auto& inline_paintable = static_cast<Painting::InlinePaintable&>(paintable);
+            auto combined_transform = paintable.compute_combined_css_transform();
+            inline_paintable.set_combined_css_transform(combined_transform);
+        }
+
         return TraversalDecision::Continue;
     });
 }
@@ -511,6 +531,18 @@ void ViewportPaintable::recompute_selection_states()
         if (auto* paintable = node->paintable())
             paintable->set_selection_state(SelectionState::Full);
     }
+}
+
+bool ViewportPaintable::handle_mousewheel(Badge<EventHandler>, CSSPixelPoint, unsigned, unsigned, int, int)
+{
+    return false;
+}
+
+void ViewportPaintable::visit_edges(Visitor& visitor)
+{
+    Base::visit_edges(visitor);
+    visitor.visit(scroll_state);
+    visitor.visit(clip_state);
 }
 
 }

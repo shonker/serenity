@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/NamedNodeMapPrototype.h>
 #include <LibWeb/DOM/Attr.h>
 #include <LibWeb/DOM/Document.h>
 #include <LibWeb/DOM/NamedNodeMap.h>
@@ -43,8 +44,7 @@ void NamedNodeMap::visit_edges(Cell::Visitor& visitor)
 {
     Base::visit_edges(visitor);
     visitor.visit(m_element);
-    for (auto& attribute : m_attributes)
-        visitor.visit(attribute);
+    visitor.visit(m_attributes);
 }
 
 // https://dom.spec.whatwg.org/#ref-for-dfn-supported-property-indices%E2%91%A3
@@ -340,6 +340,21 @@ WebIDL::ExceptionOr<JS::Value> NamedNodeMap::named_item_value(FlyString const& n
     if (!node)
         return JS::js_undefined();
     return node;
+}
+
+// https://dom.spec.whatwg.org/#dom-element-removeattributenode
+WebIDL::ExceptionOr<JS::NonnullGCPtr<Attr>> NamedNodeMap::remove_attribute_node(JS::NonnullGCPtr<Attr> attr)
+{
+    // 1. If this’s attribute list does not contain attr, then throw a "NotFoundError" DOMException.
+    auto index = m_attributes.find_first_index(attr);
+    if (!index.has_value())
+        return WebIDL::NotFoundError::create(realm(), "Attribute not found"_fly_string);
+
+    // 2. Remove attr.
+    remove_attribute_at_index(index.value());
+
+    // 3. Return attr.
+    return attr;
 }
 
 }

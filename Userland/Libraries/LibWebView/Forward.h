@@ -12,7 +12,6 @@ namespace WebView {
 
 class CookieJar;
 class Database;
-class History;
 class InspectorClient;
 class OutOfProcessWebView;
 class ProcessManager;
@@ -23,7 +22,6 @@ struct Attribute;
 struct CookieStorageKey;
 struct ProcessHandle;
 struct SearchEngine;
-struct SocketPair;
 
 }
 

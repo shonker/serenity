@@ -4,12 +4,15 @@
  * SPDX-License-Identifier: BSD-2-Clause
  */
 
+#include <LibWeb/Bindings/CSSTransitionPrototype.h>
 #include <LibWeb/Bindings/Intrinsics.h>
 #include <LibWeb/CSS/CSSStyleDeclaration.h>
 #include <LibWeb/CSS/CSSTransition.h>
 #include <LibWeb/DOM/Element.h>
 
 namespace Web::CSS {
+
+JS_DEFINE_ALLOCATOR(CSSTransition);
 
 JS::NonnullGCPtr<CSSTransition> CSSTransition::create(JS::Realm& realm, PropertyID property_id, size_t transition_generation)
 {

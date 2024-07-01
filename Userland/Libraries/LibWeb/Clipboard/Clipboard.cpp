@@ -6,6 +6,7 @@
 
 #include <LibJS/Runtime/Realm.h>
 #include <LibTextCodec/Decoder.h>
+#include <LibWeb/Bindings/ClipboardPrototype.h>
 #include <LibWeb/Bindings/HostDefined.h>
 #include <LibWeb/Clipboard/Clipboard.h>
 #include <LibWeb/FileAPI/Blob.h>
@@ -158,17 +159,17 @@ JS::NonnullGCPtr<JS::Promise> Clipboard::write_text(String data)
         if (!result) {
             // 1. Queue a global task on the permission task source, given realm’s global object, to reject p with
             //    "NotAllowedError" DOMException in realm.
-            queue_global_task(HTML::Task::Source::Permissions, realm.global_object(), [&realm, promise]() mutable {
+            queue_global_task(HTML::Task::Source::Permissions, realm.global_object(), JS::create_heap_function(realm.heap(), [&realm, promise]() mutable {
                 HTML::TemporaryExecutionContext execution_context { Bindings::host_defined_environment_settings_object(realm) };
                 WebIDL::reject_promise(realm, promise, WebIDL::NotAllowedError::create(realm, "Clipboard writing is only allowed through user activation"_fly_string));
-            });
+            }));
 
             // 2. Abort these steps.
             return;
         }
 
         // 1. Queue a global task on the clipboard task source, given realm’s global object, to perform the below steps:
-        queue_global_task(HTML::Task::Source::Clipboard, realm.global_object(), [&realm, promise, data = move(data)]() mutable {
+        queue_global_task(HTML::Task::Source::Clipboard, realm.global_object(), JS::create_heap_function(realm.heap(), [&realm, promise, data = move(data)]() mutable {
             // 1. Let itemList be an empty sequence<Blob>.
             Vector<JS::NonnullGCPtr<FileAPI::Blob>> item_list;
 
@@ -189,7 +190,7 @@ JS::NonnullGCPtr<JS::Promise> Clipboard::write_text(String data)
             // 6. Resolve p.
             HTML::TemporaryExecutionContext execution_context { Bindings::host_defined_environment_settings_object(realm) };
             WebIDL::resolve_promise(realm, promise, JS::js_undefined());
-        });
+        }));
     });
 
     // 4. Return p.

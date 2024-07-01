@@ -9,6 +9,7 @@
 #include <AK/Array.h>
 #include <AK/Concepts.h>
 #include <AK/Function.h>
+#include <AK/SetOnce.h>
 #include <AK/Types.h>
 
 #include <Kernel/Arch/DeferredCallEntry.h>
@@ -72,7 +73,7 @@ private:
     static Atomic<u32> s_idle_cpu_mask;
 
     TSS m_tss;
-    bool m_has_qemu_hvf_quirk;
+    SetOnce m_has_qemu_hvf_quirk;
 
     ProcessorInfo* m_info;
 
@@ -153,10 +154,12 @@ public:
 
     static void smp_unicast(u32 cpu, Function<void()>, bool async);
     static void smp_broadcast_flush_tlb(Memory::PageDirectory const*, VirtualAddress, size_t);
+
+    static void set_fs_base(FlatPtr);
 };
 
 template<typename T>
-ALWAYS_INLINE Thread* ProcessorBase<T>::current_thread()
+ALWAYS_INLINE NO_SANITIZE_COVERAGE Thread* ProcessorBase<T>::current_thread()
 {
     // If we were to use ProcessorBase::current here, we'd have to
     // disable interrupts to prevent a race where we may get pre-empted
@@ -224,7 +227,7 @@ ALWAYS_INLINE void ProcessorBase<T>::enter_critical()
 }
 
 template<typename T>
-ALWAYS_INLINE bool ProcessorBase<T>::are_interrupts_enabled()
+ALWAYS_INLINE NO_SANITIZE_COVERAGE bool ProcessorBase<T>::are_interrupts_enabled()
 {
     return Kernel::are_interrupts_enabled();
 }
@@ -297,7 +300,7 @@ ALWAYS_INLINE void ProcessorBase<T>::wait_check()
 }
 
 template<typename T>
-ALWAYS_INLINE FlatPtr ProcessorBase<T>::current_in_irq()
+ALWAYS_INLINE NO_SANITIZE_COVERAGE FlatPtr ProcessorBase<T>::current_in_irq()
 {
     return read_gs_ptr(__builtin_offsetof(Processor, m_in_irq));
 }

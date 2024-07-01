@@ -92,6 +92,8 @@ public:
     StringView method() const;
     WebIDL::ExceptionOr<void> set_method(String const&);
 
+    JS::NonnullGCPtr<DOM::DOMTokenList> rel_list();
+
     String action() const;
     WebIDL::ExceptionOr<void> set_action(String const&);
 
@@ -108,6 +110,8 @@ private:
     virtual WebIDL::ExceptionOr<JS::Value> named_item_value(FlyString const& name) const override;
     virtual Vector<FlyString> supported_property_names() const override;
     virtual bool is_supported_property_index(u32) const override;
+
+    virtual void attribute_changed(FlyString const& name, Optional<String> const& value) override;
 
     ErrorOr<String> pick_an_encoding() const;
 
@@ -142,7 +146,9 @@ private:
     // https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#planned-navigation
     // Each form element has a planned navigation, which is either null or a task; when the form is first created,
     // its planned navigation must be set to null.
-    Task const* m_planned_navigation { nullptr };
+    JS::GCPtr<Task const> m_planned_navigation;
+
+    JS::GCPtr<DOM::DOMTokenList> m_rel_list;
 };
 
 }

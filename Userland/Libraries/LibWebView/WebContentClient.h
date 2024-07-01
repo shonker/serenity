@@ -11,7 +11,6 @@
 #include <LibIPC/ConnectionToServer.h>
 #include <LibWeb/HTML/ActivateTab.h>
 #include <LibWeb/HTML/FileFilter.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/HTML/SelectItem.h>
 #include <LibWeb/HTML/WebViewHints.h>
 #include <WebContent/WebContentClientEndpoint.h>
@@ -40,13 +39,13 @@ private:
     virtual void notify_process_information(WebView::ProcessHandle const&) override;
     virtual void did_paint(u64 page_id, Gfx::IntRect const&, i32) override;
     virtual void did_finish_loading(u64 page_id, URL::URL const&) override;
-    virtual void did_update_url(u64 page_id, URL::URL const& url, Web::HTML::HistoryHandlingBehavior history_behavior) override;
     virtual void did_request_navigate_back(u64 page_id) override;
     virtual void did_request_navigate_forward(u64 page_id) override;
     virtual void did_request_refresh(u64 page_id) override;
     virtual void did_request_cursor_change(u64 page_id, i32) override;
     virtual void did_layout(u64 page_id, Gfx::IntSize) override;
     virtual void did_change_title(u64 page_id, ByteString const&) override;
+    virtual void did_change_url(u64 page_id, URL::URL const&) override;
     virtual void did_request_scroll(u64 page_id, i32, i32) override;
     virtual void did_request_scroll_to(u64 page_id, Gfx::IntPoint) override;
     virtual void did_enter_tooltip_area(u64 page_id, Gfx::IntPoint, ByteString const&) override;
@@ -101,6 +100,7 @@ private:
     virtual void did_change_theme_color(u64 page_id, Gfx::Color color) override;
     virtual void did_insert_clipboard_entry(u64 page_id, String const& data, String const& presentation_style, String const& mime_type) override;
     virtual void did_change_audio_play_state(u64 page_id, Web::HTML::AudioPlayState) override;
+    virtual void did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled) override;
     virtual void inspector_did_load(u64 page_id) override;
     virtual void inspector_did_select_dom_node(u64 page_id, i32 node_id, Optional<Web::CSS::Selector::PseudoElement::Type> const& pseudo_element) override;
     virtual void inspector_did_set_dom_node_text(u64 page_id, i32 node_id, String const& text) override;
@@ -115,6 +115,8 @@ private:
 
     // FIXME: Does a HashMap holding references make sense?
     HashMap<u64, ViewImplementation*> m_views;
+
+    ProcessHandle m_process_handle;
 };
 
 }

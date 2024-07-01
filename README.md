@@ -2,10 +2,10 @@
 
 Graphical Unix-like operating system for x86-64 computers.
 
+**NOTE:** The Ladybird cross-platform web browser project is now separate from SerenityOS, and is now actively developed in the [LadybirdBrowser/ladybird](https://github.com/LadybirdBrowser/ladybird) repository.
+
 [![GitHub Actions Status](https://github.com/SerenityOS/serenity/workflows/Build,%20lint,%20and%20test/badge.svg)](https://github.com/SerenityOS/serenity/actions?query=workflow%3A"Build%2C%20lint%2C%20and%20test")
-[![Azure DevOps Status](https://dev.azure.com/SerenityOS/SerenityOS/_apis/build/status/CI?branchName=master)](https://dev.azure.com/SerenityOS/SerenityOS/_build/latest?definitionId=1&branchName=master)
 [![Fuzzing Status](https://oss-fuzz-build-logs.storage.googleapis.com/badges/serenity.svg)](https://bugs.chromium.org/p/oss-fuzz/issues/list?sort=-opened&can=1&q=proj:serenity)
-[![Sonar Cube Static Analysis](https://sonarcloud.io/api/project_badges/measure?project=SerenityOS_serenity&metric=ncloc)](https://sonarcloud.io/dashboard?id=SerenityOS_serenity)
 [![Discord](https://img.shields.io/discord/830522505605283862.svg?logo=discord&logoColor=white&logoWidth=20&labelColor=7289DA&label=Discord&color=17cf48)](https://discord.gg/serenityos)
 
 [FAQ](Documentation/FAQ.md) | [Documentation](#how-do-i-read-the-documentation) | [Build Instructions](#how-do-i-build-and-run-this)
@@ -56,7 +56,13 @@ Code-related documentation can be found in the [documentation](Documentation/) f
 
 ## How do I build and run this?
 
-See the [SerenityOS build instructions](https://github.com/SerenityOS/serenity/blob/master/Documentation/BuildInstructions.md). Serenity runs on Linux, macOS (aarch64 might be a challenge), Windows (with WSL2) and many other *Nixes with hardware or software virtualization.
+See the [SerenityOS build instructions](https://github.com/SerenityOS/serenity/blob/master/Documentation/BuildInstructions.md) or the [Ladybird build instructions](Documentation/BuildInstructionsLadybird.md).
+
+The build system supports a cross-compilation build of SerenityOS from Linux, macOS, Windows (with WSL2) and many other *Nixes.
+The default build system commands will launch a QEMU instance running the OS with hardware or software virtualization
+enabled as supported.
+
+Ladybird runs on the same platforms that can be the host for a cross build of SerenityOS and on SerenityOS itself.
 
 ## Get in touch and participate!
 
@@ -124,7 +130,7 @@ A general guide for contributing can be found in [`CONTRIBUTING.md`](CONTRIBUTIN
 * **Gregory Bertilson** - [Zaggy1024](https://github.com/Zaggy1024)
 * **Erik Wouters** - [EWouters](https://github.com/EWouters)
 * **Rodrigo Tobar** - [rtobar](https://github.com/rtobar)
-* **Alexander Kalenik** - [kalenikaliaksandr](https://github.com/kalenikaliaksandr) 
+* **Alexander Kalenik** - [kalenikaliaksandr](https://github.com/kalenikaliaksandr)
 * **Tim Ledbetter** - [tcl3](https://github.com/tcl3)
 * **Steffen T. Larssen** - [stelar7](https://github.com/stelar7)
 * **Andi Gallo** - [axgallo](https://github.com/axgallo)

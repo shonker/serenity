@@ -38,6 +38,9 @@ void InlineLevelIterator::enter_node_with_box_model_metrics(Layout::NodeWithStyl
     used_values.border_left = computed_values.border_left().width;
     used_values.padding_left = computed_values.padding().left().to_px(node, m_containing_block_used_values.content_width());
 
+    used_values.padding_bottom = computed_values.padding().bottom().to_px(node, m_containing_block_used_values.content_width());
+    used_values.padding_top = computed_values.padding().top().to_px(node, m_containing_block_used_values.content_width());
+
     m_extra_leading_metrics->margin += used_values.margin_left;
     m_extra_leading_metrics->border += used_values.border_left;
     m_extra_leading_metrics->padding += used_values.padding_left;
@@ -108,6 +111,11 @@ void InlineLevelIterator::compute_next()
         return;
     do {
         m_next_node = next_inline_node_in_pre_order(*m_next_node, m_containing_block);
+        if (m_next_node && m_next_node->is_svg_mask_box()) {
+            // NOTE: It is possible to encounter SVGMaskBox nodes while doing layout of formatting context established by <foreignObject> with a mask.
+            //       We should skip and let SVGFormattingContext take care of them.
+            m_next_node = m_next_node->next_sibling();
+        }
     } while (m_next_node && (!m_next_node->is_inline() && !m_next_node->is_out_of_flow(m_inline_formatting_context)));
 }
 

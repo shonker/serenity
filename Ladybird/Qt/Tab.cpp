@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2022, Andreas Kling <kling@serenityos.org>
  * Copyright (c) 2022, Matthew Costa <ucosty@gmail.com>
+ * Copyright (c) 2024, Jamie Mansfield <jmansfield@cadixdev.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -13,7 +14,6 @@
 #include <AK/TemporaryChange.h>
 #include <LibGfx/ImageFormats/BMPWriter.h>
 #include <LibGfx/Painter.h>
-#include <LibWeb/HTML/HistoryHandlingBehavior.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWebView/SearchEngine.h>
 #include <LibWebView/SourceHighlighter.h>
@@ -56,6 +56,8 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
     m_layout->setContentsMargins(0, 0, 0, 0);
 
     m_view = new WebContentView(this, web_content_options, webdriver_content_ipc_path, parent_client, page_index);
+    m_find_in_page = new FindInPageWidget(this, m_view);
+    m_find_in_page->setVisible(false);
     m_toolbar = new QToolBar(this);
     m_location_edit = new LocationEdit(this);
 
@@ -70,6 +72,15 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
 
     m_layout->addWidget(m_toolbar);
     m_layout->addWidget(m_view);
+    m_layout->addWidget(m_find_in_page);
+
+    m_hamburger_button = new QToolButton(m_toolbar);
+    m_hamburger_button->setText("Show &Menu");
+    m_hamburger_button->setToolTip("Show Menu");
+    m_hamburger_button->setIcon(create_tvg_icon_with_theme_colors("hamburger", palette()));
+    m_hamburger_button->setPopupMode(QToolButton::InstantPopup);
+    m_hamburger_button->setMenu(&m_window->hamburger_menu());
+    m_hamburger_button->setStyleSheet(":menu-indicator {image: none}");
 
     recreate_toolbar_icons();
 
@@ -79,10 +90,18 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
     m_toolbar->addAction(&m_window->go_forward_action());
     m_toolbar->addAction(&m_window->reload_action());
     m_toolbar->addWidget(m_location_edit);
+    m_toolbar->addAction(&m_window->new_tab_action());
+    m_hamburger_button_action = m_toolbar->addWidget(m_hamburger_button);
     m_toolbar->setIconSize({ 16, 16 });
     // This is a little awkward, but without this Qt shrinks the button to the size of the icon.
     // Note: toolButtonStyle="0" -> ToolButtonIconOnly.
     m_toolbar->setStyleSheet("QToolButton[toolButtonStyle=\"0\"]{width:24px;height:24px}");
+
+    m_hamburger_button_action->setVisible(!Settings::the()->show_menubar());
+
+    QObject::connect(Settings::the(), &Settings::show_menubar_changed, this, [this](bool show_menubar) {
+        m_hamburger_button_action->setVisible(!show_menubar);
+    });
 
     m_reset_zoom_button = new QToolButton(m_toolbar);
     m_reset_zoom_button->setToolButtonStyle(Qt::ToolButtonTextOnly);
@@ -114,12 +133,9 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
         m_hover_label->hide();
     };
 
-    view().on_load_start = [this](const URL::URL& url, bool is_redirect) {
-        // If we are loading due to a redirect, we replace the current history entry
-        // with the loaded URL
-        if (is_redirect) {
-            m_history.replace_current(url, m_title.toUtf8().data());
-        }
+    view().on_load_start = [this](const URL::URL& url, bool) {
+        if (m_inspector_widget)
+            m_inspector_widget->reset();
 
         auto url_serialized = qstring_from_ak_string(url.serialize());
 
@@ -131,17 +147,6 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
 
         m_location_edit->setText(url_serialized);
         m_location_edit->setCursorPosition(0);
-
-        // Don't add to history if back or forward is pressed
-        if (!m_is_history_navigation) {
-            m_history.push(url, m_title.toUtf8().data());
-        }
-        m_is_history_navigation = false;
-
-        update_navigation_button_states();
-
-        if (m_inspector_widget)
-            m_inspector_widget->reset();
     };
 
     view().on_load_finish = [this](auto&) {
@@ -149,25 +154,14 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
             m_inspector_widget->inspect();
     };
 
-    view().on_url_updated = [this](auto const& url, auto history_behavior) {
-        switch (history_behavior) {
-        case Web::HTML::HistoryHandlingBehavior::Push:
-            m_history.push(url, m_title.toUtf8().data());
-            break;
-        case Web::HTML::HistoryHandlingBehavior::Replace:
-            m_history.replace_current(url, m_title.toUtf8().data());
-            break;
-        }
-
+    view().on_url_change = [this](auto const& url) {
         m_location_edit->setText(qstring_from_ak_string(url.serialize()));
-        update_navigation_button_states();
     };
 
     QObject::connect(m_location_edit, &QLineEdit::returnPressed, this, &Tab::location_edit_return_pressed);
 
     view().on_title_change = [this](auto const& title) {
         m_title = qstring_from_ak_string(title);
-        m_history.update_title(title);
 
         emit title_changed(tab_index(), m_title);
     };
@@ -237,7 +231,7 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
 
         dialog.setWindowTitle("Ladybird");
         dialog.setOption(QColorDialog::ShowAlphaChannel, false);
-        QObject::connect(&dialog, &QColorDialog::currentColorChanged, this, [this](const QColor& color) {
+        QObject::connect(&dialog, &QColorDialog::currentColorChanged, this, [this](QColor const& color) {
             view().color_picker_update(Color(color.red(), color.green(), color.blue()), Web::HTML::ColorPickerUpdateState::Update);
         });
 
@@ -330,8 +324,33 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
     view().on_request_select_dropdown = [this](Gfx::IntPoint content_position, i32 minimum_width, Vector<Web::HTML::SelectItem> items) {
         m_select_dropdown->clear();
         m_select_dropdown->setMinimumWidth(minimum_width / view().device_pixel_ratio());
+
+        auto add_menu_item = [this](Web::HTML::SelectItemOption const& item_option, bool in_option_group) {
+            QAction* action = new QAction(qstring_from_ak_string(in_option_group ? MUST(String::formatted("    {}", item_option.label)) : item_option.label), this);
+            action->setCheckable(true);
+            action->setChecked(item_option.selected);
+            action->setDisabled(item_option.disabled);
+            action->setData(QVariant(static_cast<uint>(item_option.id)));
+            QObject::connect(action, &QAction::triggered, this, &Tab::select_dropdown_action);
+            m_select_dropdown->addAction(action);
+        };
+
         for (auto const& item : items) {
-            select_dropdown_add_item(m_select_dropdown, item);
+            if (item.has<Web::HTML::SelectItemOptionGroup>()) {
+                auto const& item_option_group = item.get<Web::HTML::SelectItemOptionGroup>();
+                QAction* subtitle = new QAction(qstring_from_ak_string(item_option_group.label), this);
+                subtitle->setDisabled(true);
+                m_select_dropdown->addAction(subtitle);
+
+                for (auto const& item_option : item_option_group.items)
+                    add_menu_item(item_option, true);
+            }
+
+            if (item.has<Web::HTML::SelectItemOption>())
+                add_menu_item(item.get<Web::HTML::SelectItemOption>(), false);
+
+            if (item.has<Web::HTML::SelectItemSeparator>())
+                m_select_dropdown->addSeparator();
         }
 
         m_select_dropdown->exec(view().map_point_to_global_position(content_position));
@@ -398,6 +417,75 @@ Tab::Tab(BrowserWindow* window, WebContentOptions const& web_content_options, St
     view().on_audio_play_state_changed = [this](auto play_state) {
         emit audio_play_state_changed(tab_index(), play_state);
     };
+
+    view().on_navigation_buttons_state_changed = [this](auto back_enabled, auto forward_enabled) {
+        m_can_navigate_back = back_enabled;
+        m_can_navigate_forward = forward_enabled;
+        emit navigation_buttons_state_changed(tab_index());
+    };
+
+    auto* reload_tab_action = new QAction("&Reload Tab", this);
+    QObject::connect(reload_tab_action, &QAction::triggered, this, [this]() {
+        reload();
+    });
+
+    auto* duplicate_tab_action = new QAction("&Duplicate Tab", this);
+    QObject::connect(duplicate_tab_action, &QAction::triggered, this, [this]() {
+        m_window->new_tab_from_url(view().url(), Web::HTML::ActivateTab::Yes);
+    });
+
+    auto* move_to_start_action = new QAction("Move to &Start", this);
+    QObject::connect(move_to_start_action, &QAction::triggered, this, [this]() {
+        m_window->move_tab(tab_index(), 0);
+    });
+
+    auto* move_to_end_action = new QAction("Move to &End", this);
+    QObject::connect(move_to_end_action, &QAction::triggered, this, [this]() {
+        m_window->move_tab(tab_index(), m_window->tab_count() - 1);
+    });
+
+    auto* close_tab_action = new QAction("&Close Tab", this);
+    QObject::connect(close_tab_action, &QAction::triggered, this, [this]() {
+        view().on_close();
+    });
+
+    auto* close_tabs_to_left_action = new QAction("C&lose Tabs to Left", this);
+    QObject::connect(close_tabs_to_left_action, &QAction::triggered, this, [this]() {
+        for (auto i = tab_index() - 1; i >= 0; i--) {
+            m_window->close_tab(i);
+        }
+    });
+
+    auto* close_tabs_to_right_action = new QAction("Close Tabs to R&ight", this);
+    QObject::connect(close_tabs_to_right_action, &QAction::triggered, this, [this]() {
+        for (auto i = m_window->tab_count() - 1; i > tab_index(); i--) {
+            m_window->close_tab(i);
+        }
+    });
+
+    auto* close_other_tabs_action = new QAction("Cl&ose Other Tabs", this);
+    QObject::connect(close_other_tabs_action, &QAction::triggered, this, [this]() {
+        for (auto i = m_window->tab_count() - 1; i >= 0; i--) {
+            if (i == tab_index())
+                continue;
+
+            m_window->close_tab(i);
+        }
+    });
+
+    m_context_menu = new QMenu("Context menu", this);
+    m_context_menu->addAction(reload_tab_action);
+    m_context_menu->addAction(duplicate_tab_action);
+    m_context_menu->addSeparator();
+    auto* move_tab_menu = m_context_menu->addMenu("Mo&ve Tab");
+    move_tab_menu->addAction(move_to_start_action);
+    move_tab_menu->addAction(move_to_end_action);
+    m_context_menu->addSeparator();
+    m_context_menu->addAction(close_tab_action);
+    auto* close_multiple_tabs_menu = m_context_menu->addMenu("Close &Multiple Tabs");
+    close_multiple_tabs_menu->addAction(close_tabs_to_left_action);
+    close_multiple_tabs_menu->addAction(close_tabs_to_right_action);
+    close_multiple_tabs_menu->addAction(close_other_tabs_action);
 
     auto* search_selected_text_action = new QAction("&Search for <query>", this);
     search_selected_text_action->setIcon(load_icon_from_uri("resource://icons/16x16/find.png"sv));
@@ -704,35 +792,10 @@ Tab::~Tab()
     delete m_inspector_widget;
 }
 
-void Tab::select_dropdown_add_item(QMenu* menu, Web::HTML::SelectItem const& item)
-{
-    if (item.type == Web::HTML::SelectItem::Type::OptionGroup) {
-        QAction* subtitle = new QAction(qstring_from_ak_string(item.label.value_or(""_string)), this);
-        subtitle->setDisabled(true);
-        menu->addAction(subtitle);
-
-        for (auto const& item : *item.items) {
-            select_dropdown_add_item(menu, item);
-        }
-    }
-    if (item.type == Web::HTML::SelectItem::Type::Option) {
-        QAction* action = new QAction(qstring_from_ak_string(item.label.value_or(""_string)), this);
-        action->setCheckable(true);
-        action->setChecked(item.selected);
-        action->setData(QVariant(qstring_from_ak_string(item.value.value_or(""_string))));
-        QObject::connect(action, &QAction::triggered, this, &Tab::select_dropdown_action);
-        menu->addAction(action);
-    }
-    if (item.type == Web::HTML::SelectItem::Type::Separator) {
-        menu->addSeparator();
-    }
-}
-
 void Tab::select_dropdown_action()
 {
     QAction* action = qobject_cast<QAction*>(sender());
-    auto value = action->data().value<QString>();
-    view().select_dropdown_closed(ak_string_from_qstring(value));
+    view().select_dropdown_closed(action->data().value<uint>());
 }
 
 void Tab::update_reset_zoom_button()
@@ -765,31 +828,17 @@ void Tab::load_html(StringView html)
 
 void Tab::back()
 {
-    if (!m_history.can_go_back())
-        return;
-
-    m_is_history_navigation = true;
-    m_history.go_back();
-    view().load(m_history.current().url.to_byte_string());
+    view().traverse_the_history_by_delta(-1);
 }
 
 void Tab::forward()
 {
-    if (!m_history.can_go_forward())
-        return;
-
-    m_is_history_navigation = true;
-    m_history.go_forward();
-    view().load(m_history.current().url.to_byte_string());
+    view().traverse_the_history_by_delta(1);
 }
 
 void Tab::reload()
 {
-    if (m_history.is_empty())
-        return;
-
-    m_is_history_navigation = true;
-    view().load(m_history.current().url.to_byte_string());
+    view().reload();
 }
 
 void Tab::open_link(URL::URL const& url)
@@ -828,10 +877,7 @@ int Tab::tab_index()
 
 void Tab::debug_request(ByteString const& request, ByteString const& argument)
 {
-    if (request == "dump-history")
-        m_history.dump();
-    else
-        m_view->debug_request(request, argument);
+    m_view->debug_request(request, argument);
 }
 
 void Tab::resizeEvent(QResizeEvent* event)
@@ -844,15 +890,18 @@ void Tab::resizeEvent(QResizeEvent* event)
 void Tab::update_hover_label()
 {
     m_hover_label->resize(QFontMetrics(m_hover_label->font()).boundingRect(m_hover_label->text()).adjusted(-4, -2, 4, 2).size());
-    m_hover_label->move(6, height() - m_hover_label->height() - 8);
+    auto hover_label_height = height() - m_hover_label->height() - 8;
+    if (m_find_in_page->isVisible())
+        hover_label_height -= m_find_in_page->height() - 4;
+
+    m_hover_label->move(6, hover_label_height);
     m_hover_label->raise();
 }
 
-void Tab::update_navigation_button_states()
+void Tab::update_navigation_buttons_state()
 {
-    m_window->go_back_action().setEnabled(m_history.can_go_back());
-    m_window->go_forward_action().setEnabled(m_history.can_go_forward());
-    m_window->reload_action().setEnabled(!m_history.is_empty());
+    m_window->go_back_action().setEnabled(m_can_navigate_back);
+    m_window->go_forward_action().setEnabled(m_can_navigate_forward);
 }
 
 bool Tab::event(QEvent* event)
@@ -870,6 +919,8 @@ void Tab::recreate_toolbar_icons()
     m_window->go_back_action().setIcon(create_tvg_icon_with_theme_colors("back", palette()));
     m_window->go_forward_action().setIcon(create_tvg_icon_with_theme_colors("forward", palette()));
     m_window->reload_action().setIcon(create_tvg_icon_with_theme_colors("reload", palette()));
+    m_window->new_tab_action().setIcon(create_tvg_icon_with_theme_colors("new_tab", palette()));
+    m_hamburger_button->setIcon(create_tvg_icon_with_theme_colors("hamburger", palette()));
 }
 
 void Tab::show_inspector_window(InspectorTarget inspector_target)
@@ -887,6 +938,12 @@ void Tab::show_inspector_window(InspectorTarget inspector_target)
         m_inspector_widget->select_hovered_node();
     else
         m_inspector_widget->select_default_node();
+}
+
+void Tab::show_find_in_page()
+{
+    m_find_in_page->setVisible(true);
+    m_find_in_page->setFocus();
 }
 
 void Tab::close_sub_widgets()

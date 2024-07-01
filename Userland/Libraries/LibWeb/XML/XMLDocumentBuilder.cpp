@@ -154,11 +154,8 @@ void XMLDocumentBuilder::text(StringView data)
         text_node.set_data(MUST(text_builder.to_string()));
         text_builder.clear();
     } else {
-        auto string = ByteString::empty();
-        if (!data.is_null())
-            string = data.to_byte_string();
-        if (!string.is_empty()) {
-            auto node = m_document->create_text_node(MUST(String::from_byte_string(string)));
+        if (!data.is_empty()) {
+            auto node = m_document->create_text_node(MUST(String::from_utf8(data)));
             MUST(m_current_node->append_child(node));
         }
     }
@@ -168,10 +165,7 @@ void XMLDocumentBuilder::comment(StringView data)
 {
     if (m_has_error)
         return;
-    auto string = ByteString::empty();
-    if (!data.is_null())
-        string = data.to_byte_string();
-    MUST(m_document->append_child(m_document->create_comment(MUST(String::from_byte_string(string)))));
+    MUST(m_document->append_child(m_document->create_comment(MUST(String::from_utf8(data)))));
 }
 
 void XMLDocumentBuilder::document_end()
@@ -205,9 +199,9 @@ void XMLDocumentBuilder::document_end()
         (void)m_document->scripts_to_execute_when_parsing_has_finished().take_first();
     }
     // Queue a global task on the DOM manipulation task source given the Document's relevant global object to run the following substeps:
-    queue_global_task(HTML::Task::Source::DOMManipulation, m_document, [document = m_document] {
+    queue_global_task(HTML::Task::Source::DOMManipulation, m_document, JS::create_heap_function(m_document->heap(), [document = m_document] {
         // Set the Document's load timing info's DOM content loaded event start time to the current high resolution time given the Document's relevant global object.
-        document->load_timing_info().dom_content_loaded_event_start_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().dom_content_loaded_event_start_time = HighResolutionTime::current_high_resolution_time(relevant_global_object(*document));
 
         // Fire an event named DOMContentLoaded at the Document object, with its bubbles attribute initialized to true.
         auto content_loaded_event = DOM::Event::create(document->realm(), HTML::EventNames::DOMContentLoaded);
@@ -215,12 +209,12 @@ void XMLDocumentBuilder::document_end()
         document->dispatch_event(content_loaded_event);
 
         // Set the Document's load timing info's DOM content loaded event end time to the current high resolution time given the Document's relevant global object.
-        document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::current_high_resolution_time(relevant_global_object(*document));
 
         // FIXME: Enable the client message queue of the ServiceWorkerContainer object whose associated service worker client is the Document object's relevant settings object.
 
         // FIXME: Invoke WebDriver BiDi DOM content loaded with the Document's browsing context, and a new WebDriver BiDi navigation status whose id is the Document object's navigation id, status is "pending", and url is the Document object's URL.
-    });
+    }));
 
     // Spin the event loop until the set of scripts that will execute as soon as possible and the list of scripts that will execute in order as soon as possible are empty.
     HTML::main_thread_event_loop().spin_until([&] {
@@ -233,7 +227,7 @@ void XMLDocumentBuilder::document_end()
     });
 
     // Queue a global task on the DOM manipulation task source given the Document's relevant global object to run the following steps:
-    queue_global_task(HTML::Task::Source::DOMManipulation, m_document, [document = m_document] {
+    queue_global_task(HTML::Task::Source::DOMManipulation, m_document, JS::create_heap_function(m_document->heap(), [document = m_document] {
         // Update the current document readiness to "complete".
         document->update_readiness(HTML::DocumentReadyState::Complete);
 
@@ -245,7 +239,7 @@ void XMLDocumentBuilder::document_end()
         JS::NonnullGCPtr<HTML::Window> window = verify_cast<HTML::Window>(relevant_global_object(*document));
 
         // Set the Document's load timing info's load event start time to the current high resolution time given window.
-        document->load_timing_info().load_event_start_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().load_event_start_time = HighResolutionTime::current_high_resolution_time(window);
 
         // Fire an event named load at window, with legacy target override flag set.
         // FIXME: The legacy target override flag is currently set by a virtual override of dispatch_event()
@@ -257,7 +251,7 @@ void XMLDocumentBuilder::document_end()
         // FIXME: Set the Document object's navigation id to null.
 
         // Set the Document's load timing info's load event end time to the current high resolution time given window.
-        document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::unsafe_shared_current_time();
+        document->load_timing_info().dom_content_loaded_event_end_time = HighResolutionTime::current_high_resolution_time(window);
 
         // Assert: Document's page showing is false.
         VERIFY(!document->page_showing());
@@ -272,7 +266,7 @@ void XMLDocumentBuilder::document_end()
         document->completely_finish_loading();
 
         // FIXME: Queue the navigation timing entry for the Document.
-    });
+    }));
 
     // FIXME: If the Document's print when loaded flag is set, then run the printing steps.
 

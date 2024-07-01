@@ -49,6 +49,8 @@ public:
     void load(URL::URL const&);
     void load_html(StringView);
     void load_empty_document();
+    void reload();
+    void traverse_the_history_by_delta(int delta);
 
     void zoom_in();
     void zoom_out();
@@ -64,6 +66,9 @@ public:
     ByteString selected_text();
     Optional<String> selected_text_with_whitespace_collapsed();
     void select_all();
+    void find_in_page(String const& query, CaseSensitivity = CaseSensitivity::CaseInsensitive);
+    void find_in_page_next_match();
+    void find_in_page_previous_match();
     void paste(String const&);
 
     void get_source();
@@ -95,7 +100,7 @@ public:
     void prompt_closed(Optional<String> response);
     void color_picker_update(Optional<Color> picked_color, Web::HTML::ColorPickerUpdateState state);
     void file_picker_closed(Vector<Web::HTML::SelectedFile> selected_files);
-    void select_dropdown_closed(Optional<String> value);
+    void select_dropdown_closed(Optional<u32> const& selected_item_id);
 
     void toggle_media_play_state();
     void toggle_media_mute_state();
@@ -107,6 +112,8 @@ public:
 
     void did_change_audio_play_state(Badge<WebContentClient>, Web::HTML::AudioPlayState);
     Web::HTML::AudioPlayState audio_play_state() const { return m_audio_play_state; }
+
+    void did_update_navigation_buttons_state(Badge<WebContentClient>, bool back_enabled, bool forward_enabled) const;
 
     enum class ScreenshotType {
         Visible,
@@ -139,9 +146,9 @@ public:
     Function<void(URL::URL const&, ByteString const& target, unsigned modifiers)> on_link_click;
     Function<void(URL::URL const&, ByteString const& target, unsigned modifiers)> on_link_middle_click;
     Function<void(ByteString const&)> on_title_change;
+    Function<void(URL::URL const&)> on_url_change;
     Function<void(URL::URL const&, bool)> on_load_start;
     Function<void(URL::URL const&)> on_load_finish;
-    Function<void(URL::URL const&, Web::HTML::HistoryHandlingBehavior)> on_url_updated;
     Function<void(ByteString const& path, i32)> on_request_file;
     Function<void()> on_navigate_back;
     Function<void()> on_navigate_forward;
@@ -187,6 +194,7 @@ public:
     Function<void(Gfx::Color)> on_theme_color_change;
     Function<void(String const&, String const&, String const&)> on_insert_clipboard_entry;
     Function<void(Web::HTML::AudioPlayState)> on_audio_play_state_changed;
+    Function<void(bool, bool)> on_navigation_buttons_state_changed;
     Function<void()> on_inspector_loaded;
     Function<void(i32, Optional<Web::CSS::Selector::PseudoElement::Type> const&)> on_inspector_selected_dom_node;
     Function<void(i32, String const&)> on_inspector_set_dom_node_text;
@@ -195,7 +203,7 @@ public:
     Function<void(i32, size_t, Vector<Attribute> const&)> on_inspector_replaced_dom_node_attribute;
     Function<void(i32, Gfx::IntPoint, String const&, Optional<String> const&, Optional<size_t> const&)> on_inspector_requested_dom_tree_context_menu;
     Function<void(String const&)> on_inspector_executed_console_script;
-    Function<SocketPair()> on_request_worker_agent;
+    Function<IPC::File()> on_request_worker_agent;
 
     virtual Web::DevicePixelRect viewport_rect() const = 0;
     virtual Gfx::IntPoint to_content_position(Gfx::IntPoint widget_position) const = 0;

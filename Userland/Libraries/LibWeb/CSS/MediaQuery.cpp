@@ -64,11 +64,11 @@ String MediaFeature::to_string() const
     case Type::IsTrue:
         return MUST(String::from_utf8(string_from_media_feature_id(m_id)));
     case Type::ExactValue:
-        return MUST(String::formatted("{}:{}", string_from_media_feature_id(m_id), m_value->to_string()));
+        return MUST(String::formatted("{}: {}", string_from_media_feature_id(m_id), m_value->to_string()));
     case Type::MinValue:
-        return MUST(String::formatted("min-{}:{}", string_from_media_feature_id(m_id), m_value->to_string()));
+        return MUST(String::formatted("min-{}: {}", string_from_media_feature_id(m_id), m_value->to_string()));
     case Type::MaxValue:
-        return MUST(String::formatted("max-{}:{}", string_from_media_feature_id(m_id), m_value->to_string()));
+        return MUST(String::formatted("max-{}: {}", string_from_media_feature_id(m_id), m_value->to_string()));
     case Type::Range:
         if (!m_range->right_comparison.has_value())
             return MUST(String::formatted("{} {} {}", m_range->left_value.to_string(), comparison_string(m_range->left_comparison), string_from_media_feature_id(m_id)));
@@ -390,60 +390,6 @@ String serialize_a_media_query_list(Vector<NonnullRefPtr<MediaQuery>> const& med
     // 2. Serialize each media query in the list of media queries, in the same order as they
     // appear in the media query list, and then serialize the list.
     return MUST(String::join(", "sv, media_queries));
-}
-
-bool is_media_feature_name(StringView name)
-{
-    // MEDIAQUERIES-4 - https://www.w3.org/TR/mediaqueries-4/#media-descriptor-table
-    if (name.equals_ignoring_ascii_case("any-hover"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("any-pointer"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("aspect-ratio"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("color"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("color-gamut"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("color-index"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("device-aspect-ratio"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("device-height"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("device-width"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("grid"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("height"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("hover"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("monochrome"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("orientation"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("overflow-block"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("overflow-inline"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("pointer"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("resolution"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("scan"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("update"sv))
-        return true;
-    if (name.equals_ignoring_ascii_case("width"sv))
-        return true;
-
-    // MEDIAQUERIES-5 - https://www.w3.org/TR/mediaqueries-5/#media-descriptor-table
-    if (name.equals_ignoring_ascii_case("prefers-color-scheme"sv))
-        return true;
-    // FIXME: Add other level 5 feature names
-
-    return false;
 }
 
 MediaQuery::MediaType media_type_from_string(StringView name)

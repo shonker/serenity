@@ -7,9 +7,13 @@
 #include <AK/Base64.h>
 #include <AK/QuickSort.h>
 #include <LibCrypto/ASN1/DER.h>
+#include <LibCrypto/Authentication/HMAC.h>
 #include <LibCrypto/Curves/Ed25519.h>
 #include <LibCrypto/Curves/SECPxxxr1.h>
 #include <LibCrypto/Hash/HashManager.h>
+#include <LibCrypto/Hash/PBKDF2.h>
+#include <LibCrypto/Hash/SHA1.h>
+#include <LibCrypto/Hash/SHA2.h>
 #include <LibCrypto/PK/RSA.h>
 #include <LibJS/Runtime/ArrayBuffer.h>
 #include <LibJS/Runtime/DataView.h>
@@ -235,16 +239,9 @@ JS::ThrowCompletionOr<NonnullOwnPtr<AlgorithmParams>> PBKDF2Params::from_value(J
     auto iterations = TRY(iterations_value.to_u32(vm));
 
     auto hash_value = TRY(object.get("hash"));
-    auto hash = Variant<Empty, HashAlgorithmIdentifier> { Empty {} };
-    if (hash_value.is_string()) {
-        auto hash_string = TRY(hash_value.to_string(vm));
-        hash = HashAlgorithmIdentifier { hash_string };
-    } else {
-        auto hash_object = TRY(hash_value.to_object(vm));
-        hash = HashAlgorithmIdentifier { hash_object };
-    }
+    auto hash = TRY(hash_value.to_string(vm));
 
-    return adopt_own<AlgorithmParams>(*new PBKDF2Params { name, salt, iterations, hash.downcast<HashAlgorithmIdentifier>() });
+    return adopt_own<AlgorithmParams>(*new PBKDF2Params { name, salt, iterations, hash });
 }
 
 RsaKeyGenParams::~RsaKeyGenParams() = default;
@@ -387,7 +384,7 @@ JS::ThrowCompletionOr<NonnullOwnPtr<AlgorithmParams>> EcKeyGenParams::from_value
 // https://w3c.github.io/webcrypto/#rsa-oaep-operations
 WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> RSAOAEP::encrypt(AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, ByteBuffer const& plaintext)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
     auto& vm = realm.vm();
     auto const& normalized_algorithm = static_cast<RsaOaepParams const&>(params);
 
@@ -415,7 +412,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> RSAOAEP::encrypt(Algorith
 // https://w3c.github.io/webcrypto/#rsa-oaep-operations
 WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> RSAOAEP::decrypt(AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, AK::ByteBuffer const& ciphertext)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
     auto& vm = realm.vm();
     auto const& normalized_algorithm = static_cast<RsaOaepParams const&>(params);
 
@@ -511,7 +508,7 @@ WebIDL::ExceptionOr<Variant<JS::NonnullGCPtr<CryptoKey>, JS::NonnullGCPtr<Crypto
 // https://w3c.github.io/webcrypto/#rsa-oaep-operations
 WebIDL::ExceptionOr<JS::NonnullGCPtr<CryptoKey>> RSAOAEP::import_key(Web::Crypto::AlgorithmParams const& params, Bindings::KeyFormat key_format, CryptoKey::InternalKeyData key_data, bool extractable, Vector<Bindings::KeyUsage> const& usages)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
 
     // 1. Let keyData be the key data to be imported.
 
@@ -681,7 +678,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<CryptoKey>> RSAOAEP::import_key(Web::Crypto
             // 2. If normalizedHash is not equal to the hash member of normalizedAlgorithm, throw a DataError.
             if (normalized_hash.parameter->name != TRY(normalized_algorithm.hash.visit([](String const& name) -> JS::ThrowCompletionOr<String> { return name; }, [&](JS::Handle<JS::Object> const& obj) -> JS::ThrowCompletionOr<String> {
                         auto name_property = TRY(obj->get("name"));
-                        return name_property.to_string(m_realm.vm()); })))
+                        return name_property.to_string(m_realm->vm()); })))
                 return WebIDL::DataError::create(m_realm, "Invalid hash"_fly_string);
         }
 
@@ -774,7 +771,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<CryptoKey>> RSAOAEP::import_key(Web::Crypto
 // https://w3c.github.io/webcrypto/#rsa-oaep-operations
 WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Object>> RSAOAEP::export_key(Bindings::KeyFormat format, JS::NonnullGCPtr<CryptoKey> key)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
     auto& vm = realm.vm();
 
     // 1. Let key be the key to be exported.
@@ -791,18 +788,55 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::Object>> RSAOAEP::export_key(Bindings::
         if (key->type() != Bindings::KeyType::Public)
             return WebIDL::InvalidAccessError::create(realm, "Key is not public"_fly_string);
 
-        // FIXME: 2. Let data be an instance of the subjectPublicKeyInfo ASN.1 structure defined in [RFC5280] with the following properties:
+        // 2. Let data be an instance of the subjectPublicKeyInfo ASN.1 structure defined in [RFC5280] with the following properties:
         // - Set the algorithm field to an AlgorithmIdentifier ASN.1 type with the following properties:
         //   - Set the algorithm field to the OID rsaEncryption defined in [RFC3447].
         //   - Set the params field to the ASN.1 type NULL.
         // - Set the subjectPublicKey field to the result of DER-encoding an RSAPublicKey ASN.1 type, as defined in [RFC3447], Appendix A.1.1,
         //   that represents the RSA public key represented by the [[handle]] internal slot of key
+        auto maybe_data = handle.visit(
+            [&](::Crypto::PK::RSAPublicKey<> const& public_key) -> ErrorOr<ByteBuffer> {
+                auto rsa_encryption_oid = Array<int, 7> { 1, 2, 840, 113549, 1, 1, 1 };
+                return TRY(::Crypto::PK::wrap_in_subject_public_key_info(public_key, rsa_encryption_oid));
+            },
+            [](auto) -> ErrorOr<ByteBuffer> {
+                VERIFY_NOT_REACHED();
+            });
+        // FIXME: clang-format butchers the visit if we do the TRY inline
+        auto data = TRY_OR_THROW_OOM(vm, maybe_data);
 
-        // FIXME: 3. Let result be the result of creating an ArrayBuffer containing data.
-        result = JS::ArrayBuffer::create(realm, TRY_OR_THROW_OOM(vm, ByteBuffer::copy(("FIXME"sv).bytes())));
+        // 3. Let result be the result of creating an ArrayBuffer containing data.
+        result = JS::ArrayBuffer::create(realm, data);
     }
 
-    // FIXME: If format is "pkcs8"
+    // If format is "pkcs8"
+    else if (format == Bindings::KeyFormat::Pkcs8) {
+        // 1. If the [[type]] internal slot of key is not "private", then throw an InvalidAccessError.
+        if (key->type() != Bindings::KeyType::Private)
+            return WebIDL::InvalidAccessError::create(realm, "Key is not private"_fly_string);
+
+        // 2. Let data be the result of encoding a privateKeyInfo structure with the following properties:
+        // - Set the version field to 0.
+        // - Set the privateKeyAlgorithm field to an PrivateKeyAlgorithmIdentifier ASN.1 type with the following properties:
+        // - - Set the algorithm field to the OID rsaEncryption defined in [RFC3447].
+        // - - Set the params field to the ASN.1 type NULL.
+        // - Set the privateKey field to the result of DER-encoding an RSAPrivateKey ASN.1 type, as defined in [RFC3447], Appendix A.1.2,
+        // that represents the RSA private key represented by the [[handle]] internal slot of key
+        auto maybe_data = handle.visit(
+            [&](::Crypto::PK::RSAPrivateKey<> const& private_key) -> ErrorOr<ByteBuffer> {
+                auto rsa_encryption_oid = Array<int, 7> { 1, 2, 840, 113549, 1, 1, 1 };
+                return TRY(::Crypto::PK::wrap_in_private_key_info(private_key, rsa_encryption_oid));
+            },
+            [](auto) -> ErrorOr<ByteBuffer> {
+                VERIFY_NOT_REACHED();
+            });
+
+        // FIXME: clang-format butchers the visit if we do the TRY inline
+        auto data = TRY_OR_THROW_OOM(vm, maybe_data);
+
+        // 3. Let result be the result of creating an ArrayBuffer containing data.
+        result = JS::ArrayBuffer::create(realm, data);
+    }
 
     // If format is "jwk"
     else if (format == Bindings::KeyFormat::Jwk) {
@@ -1070,7 +1104,7 @@ WebIDL::ExceptionOr<Variant<JS::NonnullGCPtr<CryptoKey>, JS::NonnullGCPtr<Crypto
 // https://w3c.github.io/webcrypto/#ecdsa-operations
 WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> ECDSA::sign(AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, ByteBuffer const& message)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
     auto& vm = realm.vm();
     auto const& normalized_algorithm = static_cast<EcdsaParams const&>(params);
 
@@ -1108,7 +1142,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> ECDSA::sign(AlgorithmPara
 // https://w3c.github.io/webcrypto/#ecdsa-operations
 WebIDL::ExceptionOr<JS::Value> ECDSA::verify(AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, ByteBuffer const& signature, ByteBuffer const& message)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
     auto const& normalized_algorithm = static_cast<EcdsaParams const&>(params);
 
     // 1. If the [[type]] internal slot of key is not "public", then throw an InvalidAccessError.
@@ -1120,7 +1154,7 @@ WebIDL::ExceptionOr<JS::Value> ECDSA::verify(AlgorithmParams const& params, JS::
         [](String const& name) -> JS::ThrowCompletionOr<String> { return name; },
         [&](JS::Handle<JS::Object> const& obj) -> JS::ThrowCompletionOr<String> {
                         auto name_property = TRY(obj->get("name"));
-                        return name_property.to_string(m_realm.vm()); }));
+                        return name_property.to_string(m_realm->vm()); }));
 
     // 3. Let M be the result of performing the digest operation specified by hashAlgorithm using message.
     ::Crypto::Hash::HashKind hash_kind;
@@ -1280,7 +1314,7 @@ WebIDL::ExceptionOr<Variant<JS::NonnullGCPtr<CryptoKey>, JS::NonnullGCPtr<Crypto
 
 WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> ED25519::sign([[maybe_unused]] AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, ByteBuffer const& message)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
     auto& vm = realm.vm();
 
     // 1. If the [[type]] internal slot of key is not "private", then throw an InvalidAccessError.
@@ -1314,7 +1348,7 @@ WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> ED25519::sign([[maybe_unu
 
 WebIDL::ExceptionOr<JS::Value> ED25519::verify([[maybe_unused]] AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, ByteBuffer const& signature, ByteBuffer const& message)
 {
-    auto& realm = m_realm;
+    auto& realm = *m_realm;
 
     // 1. If the [[type]] internal slot of key is not "public", then throw an InvalidAccessError.
     if (key->type() != Bindings::KeyType::Public)
@@ -1340,6 +1374,72 @@ WebIDL::ExceptionOr<JS::Value> ED25519::verify([[maybe_unused]] AlgorithmParams 
 
     // 10. Return result.
     return JS::Value(result);
+}
+
+WebIDL::ExceptionOr<JS::NonnullGCPtr<JS::ArrayBuffer>> PBKDF2::derive_bits(AlgorithmParams const& params, JS::NonnullGCPtr<CryptoKey> key, Optional<u32> length_optional)
+{
+    auto& realm = *m_realm;
+    auto const& normalized_algorithm = static_cast<PBKDF2Params const&>(params);
+
+    // 1. If length is null or zero, or is not a multiple of 8, then throw an OperationError.
+    auto length = length_optional.value_or(0);
+
+    if (length == 0 || length % 8 != 0)
+        return WebIDL::OperationError::create(realm, "Length must be greater than 0 and divisible by 8"_fly_string);
+
+    // 2. If the iterations member of normalizedAlgorithm is zero, then throw an OperationError.
+    if (normalized_algorithm.iterations == 0)
+        return WebIDL::OperationError::create(realm, "Iterations must be greater than 0"_fly_string);
+
+    // 3. Let prf be the MAC Generation function described in Section 4 of [FIPS-198-1] using the hash function described by the hash member of normalizedAlgorithm.
+    auto const& hash_algorithm = TRY(normalized_algorithm.hash.visit(
+        [](String const& name) -> JS::ThrowCompletionOr<String> { return name; },
+        [&](JS::Handle<JS::Object> const& obj) -> JS::ThrowCompletionOr<String> {
+                        auto name_property = TRY(obj->get("name"));
+                        return name_property.to_string(m_realm->vm()); }));
+
+    // 4. Let result be the result of performing the PBKDF2 operation defined in Section 5.2 of [RFC8018]
+    // using prf as the pseudo-random function, PRF,
+    // the password represented by [[handle]] internal slot of key as the password, P,
+    // the contents of the salt attribute of normalizedAlgorithm as the salt, S,
+    // the value of the iterations attribute of normalizedAlgorithm as the iteration count, c,
+    // and length divided by 8 as the intended key length, dkLen.
+    ErrorOr<ByteBuffer> result = Error::from_string_view("noop error"sv);
+
+    auto password = key->handle().visit(
+        [](ByteBuffer data) -> ByteBuffer {
+            return data;
+        },
+        [](auto) -> ByteBuffer { VERIFY_NOT_REACHED(); });
+
+    auto salt = normalized_algorithm.salt;
+    auto iterations = normalized_algorithm.iterations;
+    auto derived_key_length_bytes = length / 8;
+
+    if (hash_algorithm.equals_ignoring_ascii_case("SHA-1"sv)) {
+        result = ::Crypto::Hash::PBKDF2::derive_key<::Crypto::Authentication::HMAC<::Crypto::Hash::SHA1>>(password, salt, iterations, derived_key_length_bytes);
+    } else if (hash_algorithm.equals_ignoring_ascii_case("SHA-256"sv)) {
+        result = ::Crypto::Hash::PBKDF2::derive_key<::Crypto::Authentication::HMAC<::Crypto::Hash::SHA256>>(password, salt, iterations, derived_key_length_bytes);
+    } else if (hash_algorithm.equals_ignoring_ascii_case("SHA-384"sv)) {
+        result = ::Crypto::Hash::PBKDF2::derive_key<::Crypto::Authentication::HMAC<::Crypto::Hash::SHA384>>(password, salt, iterations, derived_key_length_bytes);
+    } else if (hash_algorithm.equals_ignoring_ascii_case("SHA-512"sv)) {
+        result = ::Crypto::Hash::PBKDF2::derive_key<::Crypto::Authentication::HMAC<::Crypto::Hash::SHA512>>(password, salt, iterations, derived_key_length_bytes);
+    } else {
+        return WebIDL::NotSupportedError::create(m_realm, MUST(String::formatted("Invalid hash function '{}'", hash_algorithm)));
+    }
+
+    // 5. If the key derivation operation fails, then throw an OperationError.
+    if (result.is_error())
+        return WebIDL::OperationError::create(realm, "Failed to derive key"_fly_string);
+
+    // 6. Return result
+    return JS::ArrayBuffer::create(realm, result.release_value());
+}
+
+WebIDL::ExceptionOr<JS::Value> PBKDF2::get_key_length(AlgorithmParams const&)
+{
+    // 1. Return null.
+    return JS::js_null();
 }
 
 }

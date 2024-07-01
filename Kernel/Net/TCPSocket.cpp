@@ -157,7 +157,7 @@ ErrorOr<NonnullRefPtr<TCPSocket>> TCPSocket::try_create_client(IPv4Address const
         client->set_local_port(new_local_port);
         client->set_peer_address(new_peer_address);
         client->set_peer_port(new_peer_port);
-        client->set_bound(true);
+        client->set_bound();
         client->set_direction(Direction::Incoming);
         client->set_originator(*this);
 
@@ -733,7 +733,7 @@ void TCPSocket::retransmit_packets()
             packet.tx_counter++;
 
             if constexpr (TCP_SOCKET_DEBUG) {
-                auto& tcp_packet = *(const TCPPacket*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
+                auto& tcp_packet = *(TCPPacket const*)(packet.buffer->buffer->data() + packet.ipv4_payload_offset);
                 dbgln("Sending TCP packet from {}:{} to {}:{} with ({}{}{}{}) seq_no={}, ack_no={}, tx_counter={}",
                     local_address(), local_port(),
                     peer_address(), peer_port(),

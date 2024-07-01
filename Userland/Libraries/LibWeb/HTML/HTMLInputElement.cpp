@@ -10,6 +10,7 @@
 
 #include <LibJS/Runtime/Date.h>
 #include <LibJS/Runtime/NativeFunction.h>
+#include <LibWeb/Bindings/HTMLInputElementPrototype.h>
 #include <LibWeb/CSS/StyleValues/DisplayStyleValue.h>
 #include <LibWeb/CSS/StyleValues/IdentifierStyleValue.h>
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
@@ -31,11 +32,11 @@
 #include <LibWeb/HTML/Scripting/Environments.h>
 #include <LibWeb/HTML/SelectedFile.h>
 #include <LibWeb/HTML/SharedImageRequest.h>
+#include <LibWeb/HTML/ValidityState.h>
 #include <LibWeb/HTML/Window.h>
 #include <LibWeb/Infra/CharacterTypes.h>
 #include <LibWeb/Infra/Strings.h>
 #include <LibWeb/Layout/BlockContainer.h>
-#include <LibWeb/Layout/ButtonBox.h>
 #include <LibWeb/Layout/CheckBox.h>
 #include <LibWeb/Layout/ImageBox.h>
 #include <LibWeb/Layout/RadioButton.h>
@@ -81,13 +82,24 @@ void HTMLInputElement::visit_edges(Cell::Visitor& visitor)
     visitor.visit(m_image_request);
 }
 
+// https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#dom-cva-validity
+JS::NonnullGCPtr<ValidityState const> HTMLInputElement::validity() const
+{
+    auto& vm = this->vm();
+    auto& realm = this->realm();
+
+    dbgln("FIXME: Implement validity attribute getter");
+
+    return vm.heap().allocate<ValidityState>(realm, realm);
+}
+
 JS::GCPtr<Layout::Node> HTMLInputElement::create_layout_node(NonnullRefPtr<CSS::StyleProperties> style)
 {
     if (type_state() == TypeAttributeState::Hidden)
         return nullptr;
 
     if (type_state() == TypeAttributeState::SubmitButton || type_state() == TypeAttributeState::Button || type_state() == TypeAttributeState::ResetButton)
-        return heap().allocate_without_realm<Layout::ButtonBox>(document(), *this, move(style));
+        return heap().allocate_without_realm<Layout::BlockContainer>(document(), this, move(style));
 
     if (type_state() == TypeAttributeState::ImageButton)
         return heap().allocate_without_realm<Layout::ImageBox>(document(), *this, move(style), *this);
@@ -134,6 +146,7 @@ void HTMLInputElement::set_checked(bool checked, ChangeSource change_source)
     if (parent()) {
         parent()->for_each_child([&](auto& child) {
             child.invalidate_style();
+            return IterationDecision::Continue;
         });
     }
 }
@@ -246,14 +259,20 @@ static void show_the_picker_if_applicable(HTMLInputElement& element)
 
     // 1. If element's relevant global object does not have transient activation, then return.
     auto& global_object = relevant_global_object(element);
-    if (!is<HTML::Window>(global_object) || !static_cast<HTML::Window&>(global_object).has_transient_activation())
+    if (!is<HTML::Window>(global_object))
+        return;
+    auto& relevant_global_object = static_cast<HTML::Window&>(global_object);
+    if (!relevant_global_object.has_transient_activation())
         return;
 
     // 2. If element is not mutable, then return.
     if (!element.is_mutable())
         return;
 
-    // 3. If element's type attribute is in the File Upload state, then run these steps in parallel:
+    // 3. Consume user activation given element's relevant global object.
+    relevant_global_object.consume_user_activation();
+
+    // 4. If element's type attribute is in the File Upload state, then run these steps in parallel:
     if (element.type_state() == HTMLInputElement::TypeAttributeState::FileUpload) {
         // NOTE: These steps cannot be fully implemented here, and must be done in the PageClient when the response comes back from the PageHost
 
@@ -275,7 +294,7 @@ static void show_the_picker_if_applicable(HTMLInputElement& element)
         return;
     }
 
-    // 4. Otherwise, the user agent should show any relevant user interface for selecting a value for element,
+    // 5. Otherwise, the user agent should show any relevant user interface for selecting a value for element,
     //    in the way it normally would when the user interacts with the control. (If no such UI applies to element, then this step does nothing.)
     //    If such a user interface is shown, it must respect the requirements stated in the relevant parts of the specification for how element
     //    behaves given its type attribute state. (For example, various sections describe restrictions on the resulting value string.)
@@ -379,7 +398,7 @@ WebIDL::ExceptionOr<void> HTMLInputElement::run_input_activation_behavior(DOM::E
     return {};
 }
 
-void HTMLInputElement::did_edit_text_node(Badge<BrowsingContext>)
+void HTMLInputElement::did_edit_text_node(Badge<Navigable>)
 {
     // An input element's dirty value flag must be set to true whenever the user interacts with the control in a way that changes the value.
     m_value = value_sanitization_algorithm(m_text_node->data());
@@ -543,8 +562,8 @@ WebIDL::ExceptionOr<void> HTMLInputElement::set_value(String const& value)
                 m_text_node->set_data(m_value);
                 update_placeholder_visibility();
 
-                if (auto* browsing_context = document().browsing_context())
-                    browsing_context->set_cursor_position(DOM::Position::create(realm, *m_text_node, m_text_node->data().bytes().size()));
+                if (auto navigable = document().navigable())
+                    navigable->set_cursor_position(DOM::Position::create(realm, *m_text_node, m_text_node->data().bytes().size()));
             }
 
             update_shadow_tree();
@@ -609,6 +628,14 @@ void HTMLInputElement::update_placeholder_visibility()
     } else {
         MUST(m_placeholder_element->style_for_bindings()->set_property(CSS::PropertyID::Display, "none"sv));
         MUST(m_inner_text_element->style_for_bindings()->set_property(CSS::PropertyID::Display, "block"sv));
+    }
+}
+
+void HTMLInputElement::update_text_input_shadow_tree()
+{
+    if (m_text_node) {
+        m_text_node->set_data(m_value);
+        update_placeholder_visibility();
     }
 }
 
@@ -705,16 +732,19 @@ Optional<String> HTMLInputElement::placeholder_value() const
 
 void HTMLInputElement::create_shadow_tree_if_needed()
 {
-    if (shadow_root_internal())
+    if (shadow_root())
         return;
 
     switch (type_state()) {
     case TypeAttributeState::Hidden:
     case TypeAttributeState::RadioButton:
     case TypeAttributeState::Checkbox:
+        break;
     case TypeAttributeState::Button:
     case TypeAttributeState::SubmitButton:
     case TypeAttributeState::ResetButton:
+        create_button_input_shadow_tree();
+        break;
     case TypeAttributeState::ImageButton:
         break;
     case TypeAttributeState::Color:
@@ -746,8 +776,18 @@ void HTMLInputElement::update_shadow_tree()
         update_slider_thumb_element();
         break;
     default:
+        update_text_input_shadow_tree();
         break;
     }
+}
+
+void HTMLInputElement::create_button_input_shadow_tree()
+{
+    auto shadow_root = heap().allocate<DOM::ShadowRoot>(realm(), document(), *this, Bindings::ShadowRootMode::Closed);
+    set_shadow_root(shadow_root);
+
+    m_text_node = heap().allocate<DOM::Text>(realm(), document(), value());
+    MUST(shadow_root->append_child(*m_text_node));
 }
 
 void HTMLInputElement::create_text_input_shadow_tree()
@@ -1044,12 +1084,12 @@ void HTMLInputElement::update_slider_thumb_element()
 
 void HTMLInputElement::did_receive_focus()
 {
-    auto* browsing_context = document().browsing_context();
-    if (!browsing_context)
+    auto navigable = document().navigable();
+    if (!navigable)
         return;
     if (!m_text_node)
         return;
-    browsing_context->set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
+    navigable->set_cursor_position(DOM::Position::create(realm(), *m_text_node, 0));
 }
 
 void HTMLInputElement::did_lose_focus()
@@ -1073,6 +1113,18 @@ void HTMLInputElement::form_associated_element_attribute_changed(FlyString const
         }
     } else if (name == HTML::AttributeNames::type) {
         m_type = parse_type_attribute(value.value_or(String {}));
+
+        set_shadow_root(nullptr);
+        create_shadow_tree_if_needed();
+
+        // https://html.spec.whatwg.org/multipage/input.html#image-button-state-(type=image):the-input-element-4
+        // the input element's type attribute is changed back to the Image Button state, and the src attribute is present,
+        // and its value has changed since the last time the type attribute was in the Image Button state
+        if (type_state() == TypeAttributeState::ImageButton) {
+            if (auto src = attribute(AttributeNames::src); src.has_value() && src != m_last_src_value)
+                handle_src_attribute(*src).release_value_but_fixme_should_propagate_errors();
+        }
+
     } else if (name == HTML::AttributeNames::value) {
         if (!m_dirty_value) {
             if (!value.has_value()) {
@@ -1081,12 +1133,13 @@ void HTMLInputElement::form_associated_element_attribute_changed(FlyString const
                 m_value = value_sanitization_algorithm(*value);
             }
 
-            update_placeholder_visibility();
             update_shadow_tree();
         }
     } else if (name == HTML::AttributeNames::placeholder) {
-        if (m_placeholder_text_node)
+        if (m_placeholder_text_node) {
             m_placeholder_text_node->set_data(placeholder());
+            update_placeholder_visibility();
+        }
     } else if (name == HTML::AttributeNames::readonly) {
         handle_readonly_attribute(value);
     } else if (name == HTML::AttributeNames::src) {
@@ -1096,17 +1149,21 @@ void HTMLInputElement::form_associated_element_attribute_changed(FlyString const
             did_update_alt_text(verify_cast<Layout::ImageBox>(*layout_node()));
     } else if (name == HTML::AttributeNames::maxlength) {
         handle_maxlength_attribute();
+    } else if (name == HTML::AttributeNames::multiple) {
+        update_shadow_tree();
     }
 }
 
 // https://html.spec.whatwg.org/multipage/input.html#attr-input-src
-WebIDL::ExceptionOr<void> HTMLInputElement::handle_src_attribute(StringView value)
+WebIDL::ExceptionOr<void> HTMLInputElement::handle_src_attribute(String const& value)
 {
     auto& realm = this->realm();
     auto& vm = realm.vm();
 
     if (type_state() != TypeAttributeState::ImageButton)
         return {};
+
+    m_last_src_value = value;
 
     // 1. Let url be the result of encoding-parsing a URL given the src attribute's value, relative to the element's
     //    node document.
@@ -1370,7 +1427,7 @@ void HTMLInputElement::set_checked_within_group()
     document().for_each_in_inclusive_subtree_of_type<HTML::HTMLInputElement>([&](auto& element) {
         if (element.checked() && &element != this && is_in_same_radio_button_group(*this, element))
             element.set_checked(false, ChangeSource::User);
-        return IterationDecision::Continue;
+        return TraversalDecision::Continue;
     });
 }
 
@@ -1397,9 +1454,9 @@ void HTMLInputElement::legacy_pre_activation_behavior()
         document().for_each_in_inclusive_subtree_of_type<HTML::HTMLInputElement>([&](auto& element) {
             if (element.checked() && is_in_same_radio_button_group(*this, element)) {
                 m_legacy_pre_activation_behavior_checked_element_in_group = &element;
-                return IterationDecision::Break;
+                return TraversalDecision::Break;
             }
-            return IterationDecision::Continue;
+            return TraversalDecision::Continue;
         });
 
         set_checked_within_group();
@@ -1497,24 +1554,6 @@ i32 HTMLInputElement::default_tab_index_value() const
 {
     // See the base function for the spec comments.
     return 0;
-}
-
-// https://html.spec.whatwg.org/multipage/input.html#image-button-state-(type=image):the-input-element-11
-void HTMLInputElement::apply_presentational_hints(CSS::StyleProperties& style) const
-{
-    // The input element supports dimension attributes.
-    if (type_state() != TypeAttributeState::ImageButton)
-        return;
-
-    for_each_attribute([&](auto& name, auto& value) {
-        if (name == HTML::AttributeNames::width) {
-            if (auto parsed_value = parse_dimension_value(value))
-                style.set_property(CSS::PropertyID::Width, parsed_value.release_nonnull());
-        } else if (name == HTML::AttributeNames::height) {
-            if (auto parsed_value = parse_dimension_value(value))
-                style.set_property(CSS::PropertyID::Height, parsed_value.release_nonnull());
-        }
-    });
 }
 
 //  https://html.spec.whatwg.org/multipage/input.html#dom-input-maxlength

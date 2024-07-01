@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, Tim Flynn <trflynn89@serenityos.org>
+ * Copyright (c) 2023-2024, Tim Flynn <trflynn89@serenityos.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -11,19 +11,20 @@
 #import <UI/LadybirdWebView.h>
 #import <UI/Tab.h>
 #import <UI/TabController.h>
+#import <UI/TaskManagerController.h>
 #import <Utilities/Conversions.h>
 
 #if !__has_feature(objc_arc)
 #    error "This project requires ARC"
 #endif
 
-@interface ApplicationDelegate ()
+@interface ApplicationDelegate () <TaskManagerDelegate>
 {
     Vector<URL::URL> m_initial_urls;
     URL::URL m_new_tab_page_url;
 
     // This will always be populated, but we cannot have a non-default constructible instance variable.
-    Optional<WebView::CookieJar> m_cookie_jar;
+    OwnPtr<WebView::CookieJar> m_cookie_jar;
 
     Ladybird::WebContentOptions m_web_content_options;
     Optional<StringView> m_webdriver_content_ipc_path;
@@ -34,6 +35,9 @@
 }
 
 @property (nonatomic, strong) NSMutableArray<TabController*>* managed_tabs;
+@property (nonatomic, strong) Tab* active_tab;
+
+@property (nonatomic, strong) TaskManagerController* task_manager_controller;
 
 - (NSMenuItem*)createApplicationMenu;
 - (NSMenuItem*)createFileMenu;
@@ -52,7 +56,7 @@
 
 - (instancetype)init:(Vector<URL::URL>)initial_urls
               newTabPageURL:(URL::URL)new_tab_page_url
-              withCookieJar:(WebView::CookieJar)cookie_jar
+              withCookieJar:(NonnullOwnPtr<WebView::CookieJar>)cookie_jar
           webContentOptions:(Ladybird::WebContentOptions const&)web_content_options
     webdriverContentIPCPath:(StringView)webdriver_content_ipc_path
 {
@@ -116,9 +120,25 @@
     return controller;
 }
 
+- (void)setActiveTab:(Tab*)tab
+{
+    self.active_tab = tab;
+}
+
+- (Tab*)activeTab
+{
+    return self.active_tab;
+}
+
 - (void)removeTab:(TabController*)controller
 {
     [self.managed_tabs removeObject:controller];
+
+    if ([self.managed_tabs count] == 0u) {
+        if (self.task_manager_controller != nil) {
+            [self.task_manager_controller.window close];
+        }
+    }
 }
 
 - (WebView::CookieJar&)cookieJar
@@ -175,6 +195,10 @@
         }
     }
 
+    if (activate_tab == Web::HTML::ActivateTab::Yes) {
+        [[controller window] orderFrontRegardless];
+    }
+
     [self.managed_tabs addObject:controller];
     return controller;
 }
@@ -183,6 +207,17 @@
 {
     auto* current_window = [NSApp keyWindow];
     [current_window close];
+}
+
+- (void)openTaskManager:(id)sender
+{
+    if (self.task_manager_controller != nil) {
+        [self.task_manager_controller.window makeKeyAndOrderFront:sender];
+        return;
+    }
+
+    self.task_manager_controller = [[TaskManagerController alloc] init:self];
+    [self.task_manager_controller showWindow:nil];
 }
 
 - (void)openLocation:(id)sender
@@ -316,9 +351,23 @@
                                          keyEquivalent:@"v"]];
     [submenu addItem:[NSMenuItem separatorItem]];
 
-    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Select all"
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Select All"
                                                 action:@selector(selectAll:)
                                          keyEquivalent:@"a"]];
+    [submenu addItem:[NSMenuItem separatorItem]];
+
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Find..."
+                                                action:@selector(find:)
+                                         keyEquivalent:@"f"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Find Next"
+                                                action:@selector(findNextMatch:)
+                                         keyEquivalent:@"g"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Find Previous"
+                                                action:@selector(findPreviousMatch:)
+                                         keyEquivalent:@"G"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Use Selection for Find"
+                                                action:@selector(useSelectionForFind:)
+                                         keyEquivalent:@"e"]];
 
     [menu setSubmenu:submenu];
     return menu;
@@ -430,6 +479,9 @@
     [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Open Inspector"
                                                 action:@selector(openInspector:)
                                          keyEquivalent:@"I"]];
+    [submenu addItem:[[NSMenuItem alloc] initWithTitle:@"Open Task Manager"
+                                                action:@selector(openTaskManager:)
+                                         keyEquivalent:@"M"]];
 
     [menu setSubmenu:submenu];
     return menu;
@@ -584,6 +636,13 @@
     }
 
     return YES;
+}
+
+#pragma mark - TaskManagerDelegate
+
+- (void)onTaskManagerClosed
+{
+    self.task_manager_controller = nil;
 }
 
 @end

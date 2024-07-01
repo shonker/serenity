@@ -15,6 +15,7 @@
 #include <LibWeb/Bindings/PlatformObject.h>
 #include <LibWeb/Fetch/Request.h>
 #include <LibWeb/Forward.h>
+#include <LibWeb/HTML/ImageBitmap.h>
 #include <LibWeb/HTML/MessagePort.h>
 #include <LibWeb/PerformanceTimeline/PerformanceEntry.h>
 #include <LibWeb/PerformanceTimeline/PerformanceEntryTuple.h>
@@ -39,6 +40,8 @@ public:
     WebIDL::ExceptionOr<String> btoa(String const& data) const;
     WebIDL::ExceptionOr<String> atob(String const& data) const;
     void queue_microtask(WebIDL::CallbackType&);
+    JS::NonnullGCPtr<JS::Promise> create_image_bitmap(ImageBitmapSource image, Optional<ImageBitmapOptions> options = {}) const;
+    JS::NonnullGCPtr<JS::Promise> create_image_bitmap(ImageBitmapSource image, WebIDL::Long sx, WebIDL::Long sy, WebIDL::Long sw, WebIDL::Long sh, Optional<ImageBitmapOptions> options = {}) const;
     WebIDL::ExceptionOr<JS::Value> structured_clone(JS::Value, StructuredSerializeOptions const&) const;
     JS::NonnullGCPtr<JS::Promise> fetch(Fetch::RequestInfo const&, Fetch::RequestInit const&) const;
 
@@ -61,11 +64,17 @@ public:
 
     void queue_the_performance_observer_task();
 
+    void register_event_source(Badge<EventSource>, JS::NonnullGCPtr<EventSource>);
+    void unregister_event_source(Badge<EventSource>, JS::NonnullGCPtr<EventSource>);
+    void forcibly_close_all_event_sources();
+
     void run_steps_after_a_timeout(i32 timeout, Function<void()> completion_step);
 
     [[nodiscard]] JS::NonnullGCPtr<HighResolutionTime::Performance> performance();
 
     JS::NonnullGCPtr<JS::Object> supported_entry_types() const;
+
+    JS::NonnullGCPtr<IndexedDB::IDBFactory> indexed_db();
 
 protected:
     void initialize(JS::Realm&);
@@ -79,6 +88,8 @@ private:
     };
     i32 run_timer_initialization_steps(TimerHandler handler, i32 timeout, JS::MarkedVector<JS::Value> arguments, Repeat repeat, Optional<i32> previous_id = {});
     void run_steps_after_a_timeout_impl(i32 timeout, Function<void()> completion_step, Optional<i32> timer_key = {});
+
+    JS::NonnullGCPtr<JS::Promise> create_image_bitmap_impl(ImageBitmapSource& image, Optional<WebIDL::Long> sx, Optional<WebIDL::Long> sy, Optional<WebIDL::Long> sw, Optional<WebIDL::Long> sh, Optional<ImageBitmapOptions>& options) const;
 
     IDAllocator m_timer_id_allocator;
     HashMap<int, JS::NonnullGCPtr<Timer>> m_timers;
@@ -96,7 +107,11 @@ private:
     // NOTE: See the PerformanceEntryTuple struct above for the map's value tuple.
     OrderedHashMap<FlyString, PerformanceTimeline::PerformanceEntryTuple> m_performance_entry_buffer_map;
 
+    HashTable<JS::NonnullGCPtr<EventSource>> m_registered_event_sources;
+
     JS::GCPtr<HighResolutionTime::Performance> m_performance;
+
+    JS::GCPtr<IndexedDB::IDBFactory> m_indexed_db;
 
     mutable JS::GCPtr<JS::Object> m_supported_entry_types_array;
 };

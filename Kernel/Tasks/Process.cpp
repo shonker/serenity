@@ -9,23 +9,18 @@
 #include <AK/StdLibExtras.h>
 #include <AK/Time.h>
 #include <AK/Types.h>
-#include <Kernel/API/Syscall.h>
-#include <Kernel/Debug.h>
-#include <Kernel/Devices/DeviceManagement.h>
-#include <Kernel/Interrupts/InterruptDisabler.h>
-#include <Kernel/Security/Credentials.h>
-#include <Kernel/Tasks/Coredump.h>
-#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
-#    include <Kernel/Devices/KCOVDevice.h>
-#endif
 #include <Kernel/API/POSIX/errno.h>
 #include <Kernel/API/POSIX/sys/limits.h>
+#include <Kernel/API/Syscall.h>
 #include <Kernel/Arch/PageDirectory.h>
+#include <Kernel/Debug.h>
+#include <Kernel/Devices/DeviceManagement.h>
 #include <Kernel/Devices/Generic/NullDevice.h>
 #include <Kernel/Devices/TTY/TTY.h>
 #include <Kernel/FileSystem/Custody.h>
 #include <Kernel/FileSystem/OpenFileDescription.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
+#include <Kernel/Interrupts/InterruptDisabler.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Library/KBufferBuilder.h>
 #include <Kernel/Library/Panic.h>
@@ -33,6 +28,8 @@
 #include <Kernel/Memory/AnonymousVMObject.h>
 #include <Kernel/Memory/SharedInodeVMObject.h>
 #include <Kernel/Sections.h>
+#include <Kernel/Security/Credentials.h>
+#include <Kernel/Tasks/Coredump.h>
 #include <Kernel/Tasks/PerformanceEventBuffer.h>
 #include <Kernel/Tasks/PerformanceManager.h>
 #include <Kernel/Tasks/Process.h>
@@ -522,7 +519,7 @@ void Process::crash(int signal, Optional<RegisterState const&> regs, bool out_of
     if (out_of_memory) {
         dbgln("\033[31;1mOut of memory\033[m, killing: {}", *this);
     } else {
-        if (ip >= kernel_load_base && g_kernel_symbols_available) {
+        if (ip >= kernel_load_base && g_kernel_symbols_available.was_set()) {
             auto const* symbol = symbolicate_kernel_address(ip);
             dbgln("\033[31;1m{:p}  {} +{}\033[0m\n", ip, (symbol ? symbol->name : "(k?)"), (symbol ? ip - symbol->address : 0));
         } else {
@@ -560,6 +557,21 @@ void Process::crash(int signal, Optional<RegisterState const&> regs, bool out_of
     Thread::current()->die_if_needed();
     VERIFY_NOT_REACHED();
 }
+
+#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
+bool Process::is_kcov_busy()
+{
+    bool is_busy = false;
+    Kernel::Process::current().for_each_thread([&](auto& thread) {
+        if (thread.m_kcov_enabled) {
+            is_busy = true;
+            return IterationDecision::Break;
+        }
+        return IterationDecision::Continue;
+    });
+    return is_busy;
+}
+#endif
 
 RefPtr<Process> Process::from_pid_in_same_jail(ProcessID pid)
 {
@@ -964,9 +976,6 @@ void Process::die()
     });
 
     kill_all_threads();
-#ifdef ENABLE_KERNEL_COVERAGE_COLLECTION
-    KCOVDevice::free_process();
-#endif
 }
 
 void Process::terminate_due_to_signal(u8 signal)
@@ -1163,7 +1172,7 @@ ErrorOr<void> Process::require_promise(Pledge promise)
     if (has_promised(promise))
         return {};
 
-    dbgln("Has not pledged {}", to_string(promise));
+    dbgln("\033[31;1mProcess has not pledged '{}'\033[0m", to_string(promise));
     Thread::current()->set_promise_violation_pending(true);
     (void)try_set_coredump_property("pledge_violation"sv, to_string(promise));
     return EPROMISEVIOLATION;
@@ -1184,6 +1193,11 @@ RefPtr<Custody> Process::executable()
 RefPtr<Custody const> Process::executable() const
 {
     return m_executable.with([](auto& executable) { return executable; });
+}
+
+ErrorOr<NonnullRefPtr<Custody>> Process::custody_for_dirfd(Badge<CustodyBase>, int dirfd)
+{
+    return custody_for_dirfd(dirfd);
 }
 
 ErrorOr<NonnullRefPtr<Custody>> Process::custody_for_dirfd(int dirfd)

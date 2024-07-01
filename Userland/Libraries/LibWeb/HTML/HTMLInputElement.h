@@ -143,7 +143,7 @@ public:
     WebIDL::ExceptionOr<void> show_picker();
 
     // ^DOM::EditableTextNodeOwner
-    virtual void did_edit_text_node(Badge<BrowsingContext>) override;
+    virtual void did_edit_text_node(Badge<Navigable>) override;
 
     // ^EventTarget
     // https://html.spec.whatwg.org/multipage/interaction.html#the-tabindex-attribute:the-input-element
@@ -173,6 +173,8 @@ public:
     virtual void form_associated_element_was_inserted() override;
     virtual void form_associated_element_was_removed(DOM::Node*) override;
     virtual void form_associated_element_attribute_changed(FlyString const&, Optional<String> const&) override;
+
+    JS::NonnullGCPtr<ValidityState const> validity() const;
 
     // ^HTMLElement
     // https://html.spec.whatwg.org/multipage/forms.html#category-label
@@ -208,7 +210,9 @@ private:
 
     // ^DOM::Element
     virtual i32 default_tab_index_value() const override;
-    virtual void apply_presentational_hints(CSS::StyleProperties&) const override;
+
+    // https://html.spec.whatwg.org/multipage/input.html#image-button-state-(type=image):dimension-attributes
+    virtual bool supports_dimension_attributes() const override { return type_state() == TypeAttributeState::ImageButton; }
 
     // ^Layout::ImageProvider
     virtual bool is_image_available() const override;
@@ -239,6 +243,7 @@ private:
     static TypeAttributeState parse_type_attribute(StringView);
     void create_shadow_tree_if_needed();
     void update_shadow_tree();
+    void create_button_input_shadow_tree();
     void create_text_input_shadow_tree();
     void create_color_input_shadow_tree();
     void create_file_input_shadow_tree();
@@ -248,7 +253,7 @@ private:
 
     void handle_maxlength_attribute();
     void handle_readonly_attribute(Optional<String> const& value);
-    WebIDL::ExceptionOr<void> handle_src_attribute(StringView value);
+    WebIDL::ExceptionOr<void> handle_src_attribute(String const& value);
 
     // https://html.spec.whatwg.org/multipage/input.html#value-sanitization-algorithm
     String value_sanitization_algorithm(String const&) const;
@@ -265,6 +270,7 @@ private:
     JS::GCPtr<DOM::Element> m_placeholder_element;
     JS::GCPtr<DOM::Text> m_placeholder_text_node;
 
+    void update_text_input_shadow_tree();
     JS::GCPtr<DOM::Element> m_inner_text_element;
     JS::GCPtr<DOM::Text> m_text_node;
     bool m_checked { false };
@@ -307,6 +313,8 @@ private:
 
     TypeAttributeState m_type { TypeAttributeState::Text };
     String m_value;
+
+    String m_last_src_value;
 
     bool m_has_uncommitted_changes { false };
 };

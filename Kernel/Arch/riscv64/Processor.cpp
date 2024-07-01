@@ -137,10 +137,17 @@ template<typename T>
 }
 
 template<typename T>
-void ProcessorBase<T>::flush_tlb_local(VirtualAddress, size_t)
+void ProcessorBase<T>::flush_tlb_local(VirtualAddress vaddr, size_t page_count)
 {
-    // FIXME: Don't flush all pages
-    flush_entire_tlb_local();
+    auto addr = vaddr.get();
+    while (page_count > 0) {
+        asm volatile("sfence.vma %0"
+                     :
+                     : "r"(addr)
+                     : "memory");
+        addr += PAGE_SIZE;
+        page_count--;
+    }
 }
 
 template<typename T>
@@ -152,6 +159,7 @@ void ProcessorBase<T>::flush_entire_tlb_local()
 template<typename T>
 void ProcessorBase<T>::flush_tlb(Memory::PageDirectory const*, VirtualAddress vaddr, size_t page_count)
 {
+    // FIXME: Use the SBI RFENCE extension to flush the TLB of other harts when we support SMP on riscv64.
     flush_tlb_local(vaddr, page_count);
 }
 
@@ -179,7 +187,7 @@ void ProcessorBase<T>::initialize_context_switching(Thread& initial_thread)
 {
     VERIFY(initial_thread.process().is_kernel_process());
 
-    m_scheduler_initialized = true;
+    m_scheduler_initialized.set();
 
     // FIXME: Figure out if we need to call {pre_,post_,}init_finished once riscv64 supports SMP
     Processor::set_current_in_scheduler(true);
@@ -211,7 +219,6 @@ void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
     // m_in_critical is restored in enter_thread_context
     from_thread->save_critical(m_in_critical);
 
-    // clang-format off
     asm volatile(
         // Store a RegisterState of from_thread on from_thread's stack
         "addi sp, sp, -(34 * 8) \n"
@@ -328,7 +335,6 @@ void ProcessorBase<T>::switch_context(Thread*& from_thread, Thread*& to_thread)
         [from_thread] "m"(from_thread),
         [to_thread] "m"(to_thread)
         : "memory", "t0", "s1", "a0", "a1");
-    // clang-format on
 
     dbgln_if(CONTEXT_SWITCH_DEBUG, "switch_context <-- from {} {} to {} {}", VirtualAddress(from_thread), *from_thread, VirtualAddress(to_thread), *to_thread);
 }
@@ -499,8 +505,6 @@ extern "C" void enter_thread_context(Thread* from_thread, Thread* to_thread)
 
     to_thread->set_cpu(Processor::current().id());
 
-    Processor::set_thread_specific_data(to_thread->thread_specific_data());
-
     auto in_critical = to_thread->saved_critical();
     VERIFY(in_critical > 0);
     Processor::restore_critical(in_critical);
@@ -544,12 +548,6 @@ template<typename T>
 StringView ProcessorBase<T>::platform_string()
 {
     return "riscv64"sv;
-}
-
-template<typename T>
-void ProcessorBase<T>::set_thread_specific_data(VirtualAddress)
-{
-    // FIXME: Add support for thread-local storage on RISC-V
 }
 
 template<typename T>

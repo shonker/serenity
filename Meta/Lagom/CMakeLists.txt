@@ -135,6 +135,9 @@ endif()
 
 CHECK_INCLUDE_FILE(pulse/pulseaudio.h HAVE_PULSEAUDIO)
 
+add_library(JSClangPlugin INTERFACE)
+add_library(GenericClangPlugin INTERFACE)
+
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
     add_compile_options(-Wno-overloaded-virtual)
     # FIXME: Re-enable this check when the warning stops triggering, or document why we can't stop it from triggering.
@@ -147,6 +150,12 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
         set(LINKER_FLAGS "${LINKER_FLAGS} -fsanitize=fuzzer")
     endif()
 
+    # Vanilla host builds only for building the clang plugins
+    if (ENABLE_CLANG_PLUGINS AND NOT CROSS_COMPILING AND NOT ENABLE_FUZZERS AND NOT ENABLE_COMPILER_EXPLORER_BUILD)
+        add_subdirectory(ClangPlugins)
+        depend_on_clang_plugin(JSClangPlugin LibJSGCClangPlugin)
+        depend_on_clang_plugin(GenericClangPlugin LambdaCaptureClangPlugin)
+    endif()
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     if (ENABLE_FUZZERS_LIBFUZZER)
         message(FATAL_ERROR
@@ -209,13 +218,6 @@ function(lagom_lib target_name fs_name)
         set(LAGOM_LIBRARY_LIBRARY_TYPE "")
     endif()
     add_library(${target_name} ${LAGOM_LIBRARY_LIBRARY_TYPE} ${LAGOM_LIBRARY_SOURCES})
-    # Don't make alias when we're going to import a previous build for Tools
-    # FIXME: Is there a better way to write this?
-    if (NOT ENABLE_FUZZERS AND NOT CMAKE_CROSSCOMPILING)
-        # alias for parity with exports
-        add_library(Lagom::${library} ALIAS ${target_name})
-    endif()
-
     set_target_properties(
         ${target_name} PROPERTIES
         VERSION "${PROJECT_VERSION}"
@@ -224,6 +226,7 @@ function(lagom_lib target_name fs_name)
         OUTPUT_NAME lagom-${fs_name}
     )
     target_link_libraries(${target_name} PRIVATE ${LAGOM_LIBRARY_LIBS})
+    target_link_libraries(${target_name} PUBLIC GenericClangPlugin)
 
     if (NOT "${target_name}" STREQUAL "AK")
         target_link_libraries(${target_name} PRIVATE AK)
@@ -235,19 +238,7 @@ function(lagom_lib target_name fs_name)
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/Userland/Libraries>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/Userland/Services>
     )
-    install(
-        TARGETS ${target_name}
-        EXPORT LagomTargets
-        RUNTIME #
-            COMPONENT Lagom_Runtime
-        LIBRARY #
-            COMPONENT Lagom_Runtime
-            NAMELINK_COMPONENT Lagom_Development
-        ARCHIVE #
-            COMPONENT Lagom_Development
-        INCLUDES #
-            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
+    add_lagom_library_install_rules(${target_name} ALIAS_NAME ${library})
     # FIXME: Move this to serenity_install_headers
     install(
         DIRECTORY "${SERENITY_PROJECT_ROOT}/Userland/Libraries/Lib${library}"
@@ -289,6 +280,7 @@ endfunction()
 function(serenity_bin name)
     add_executable(${name} ${SOURCES} ${GENERATED_SOURCES})
     add_executable(Lagom::${name} ALIAS ${name})
+    target_link_libraries(${name} PUBLIC GenericClangPlugin)
     install(
         TARGETS ${target_name}
         EXPORT LagomTargets
@@ -328,6 +320,10 @@ if (NOT TARGET all_generated)
     add_custom_target(all_generated)
 endif()
 
+# Plugins need to be installed in order to be used by non-lagom builds
+add_lagom_library_install_rules(GenericClangPlugin)
+add_lagom_library_install_rules(JSClangPlugin)
+
 # Create mostly empty targets for system libraries we don't need to build for Lagom
 add_library(LibC INTERFACE)
 add_library(LibCrypt INTERFACE)
@@ -347,9 +343,10 @@ install(TARGETS LibC LibCrypt LibSystem NoCoverage EXPORT LagomTargets)
 # AK
 add_serenity_subdirectory(AK)
 lagom_lib(AK ak SOURCES ${AK_SOURCES})
-if (${CMAKE_SYSTEM_NAME} MATCHES "BSD$" OR HAIKU)
-    # BSD Platforms and Haiku have backtrace(3) in a separate library
-    target_link_libraries(AK PRIVATE execinfo)
+find_package(Backtrace)
+if (Backtrace_FOUND AND NOT "${Backtrace_LIBRARIES}" STREQUAL "")
+    target_link_libraries(AK PRIVATE ${Backtrace_LIBRARIES})
+    target_include_directories(AK PRIVATE ${Backtrace_INCLUDE_DIRS})
 endif()
 
 add_serenity_subdirectory(Userland/Libraries/LibUnicode)
@@ -360,7 +357,8 @@ add_serenity_subdirectory(Userland/Libraries/LibCore)
 target_link_libraries(LibCore PRIVATE Threads::Threads)
 if (${CMAKE_SYSTEM_NAME} MATCHES "NetBSD")
     # NetBSD has its shm_open and shm_unlink functions in librt so we need to link that
-    target_link_libraries(LibCore PRIVATE librt.so)
+    target_link_libraries(LibCore PRIVATE rt)
+    target_link_libraries(LibCoreMinimal PRIVATE rt)
 endif()
 if (${CMAKE_SYSTEM_NAME} MATCHES "SunOS")
     # Solaris has socket and networking related functions in two extra libraries
@@ -497,14 +495,7 @@ if (BUILD_LAGOM)
     endif()
 
     if (NOT EMSCRIPTEN)
-        # FIXME: Create a LIBELF_SOURCES macro similar to AK
-        file(GLOB LIBELF_SOURCES CONFIGURE_DEPENDS "../../Userland/Libraries/LibELF/*.cpp")
-        # There's no way we can reliably make the dynamic loading classes cross platform
-        list(FILTER LIBELF_SOURCES EXCLUDE REGEX ".*Dynamic.*.cpp$")
-        lagom_lib(LibELF elf
-            SOURCES ${LIBELF_SOURCES}
-        )
-        list(APPEND lagom_standard_libraries X86)
+        list(APPEND lagom_standard_libraries ELF X86)
     endif()
 
     foreach(lib IN LISTS lagom_standard_libraries)
@@ -528,12 +519,7 @@ if (BUILD_LAGOM)
     # FIXME: How about we don't include Kernel/API from random high-level libraries?
     install(FILES ${SERENITY_PROJECT_ROOT}/Kernel/API/KeyCode.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/Kernel/API")
 
-    # FIXME: LibLocaleData is an object lib in Lagom, because the weak symbol trick we use on serenity
-    #    straight up isn't supposed to work per ELF rules
     target_link_libraries(LibLocale PRIVATE LibTimeZone)
-    if (ENABLE_UNICODE_DATABASE_DOWNLOAD)
-        install(TARGETS LibLocaleData EXPORT LagomTargets)
-    endif()
 
     add_serenity_subdirectory(Userland/Shell)
 
@@ -549,21 +535,15 @@ if (BUILD_LAGOM)
             lagom_utility(adjtime SOURCES ../../Userland/Utilities/adjtime.cpp LIBS LibMain)
         endif()
 
+        lagom_utility(animation SOURCES ../../Userland/Utilities/animation.cpp LIBS LibGfx LibMain)
         lagom_utility(base64 SOURCES ../../Userland/Utilities/base64.cpp LIBS LibMain)
 
-        # FIXME: Excluding arm64 is a temporary hack to circumvent a build problem
-        #        for Lagom on Apple M1
-        if (NOT CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" AND NOT EMSCRIPTEN)
-            lagom_utility(disasm SOURCES ../../Userland/Utilities/disasm.cpp LIBS LibELF LibX86 LibMain)
-        endif()
-
         if (NOT EMSCRIPTEN)
-            # LibELF is part of LibC in SerenityOS builds, but not in Lagom.
+            lagom_utility(disasm SOURCES ../../Userland/Utilities/disasm.cpp LIBS LibELF LibX86 LibMain)
             lagom_utility(file SOURCES ../../Userland/Utilities/file.cpp LIBS LibAudio LibArchive LibCompress LibELF LibGfx LibIPC LibMain)
         endif()
 
         lagom_utility(gml-format SOURCES ../../Userland/Utilities/gml-format.cpp LIBS LibGUI LibMain)
-        lagom_utility(gunzip SOURCES ../../Userland/Utilities/gunzip.cpp LIBS LibCompress LibMain)
         lagom_utility(gzip SOURCES ../../Userland/Utilities/gzip.cpp LIBS LibCompress LibMain)
 
         # Work around bug in JetBrains distributed CMake 3.27.2 where this causes infinite recursion in
@@ -631,6 +611,7 @@ if (BUILD_LAGOM)
         lagom_utility(xml SOURCES ../../Userland/Utilities/xml.cpp LIBS LibFileSystem LibMain LibXML LibURL)
         lagom_utility(xzcat SOURCES ../../Userland/Utilities/xzcat.cpp LIBS LibCompress LibMain)
         lagom_utility(fdtdump SOURCES ../../Userland/Utilities/fdtdump.cpp LIBS LibDeviceTree LibMain)
+        lagom_utility(crypto-bench SOURCES ../../Userland/Utilities/crypto-bench.cpp LIBS LibMain LibCrypto)
 
         enable_testing()
         # LibTest
@@ -647,6 +628,8 @@ if (BUILD_LAGOM)
             OBJECT
             "${SERENITY_PROJECT_ROOT}/Userland/Libraries/LibTest/TestMain.cpp"
         )
+        target_link_libraries(LibTest PUBLIC GenericClangPlugin)
+        target_link_libraries(LibTestMain PUBLIC GenericClangPlugin)
 
         # LibTest tests from Tests/
         set(TEST_DIRECTORIES
@@ -656,6 +639,7 @@ if (BUILD_LAGOM)
             LibCompress
             LibGL
             LibGfx
+            LibHTTP
             LibIMAP
             LibLocale
             LibMarkdown
@@ -666,12 +650,19 @@ if (BUILD_LAGOM)
             LibTTF
             LibTimeZone
             LibUnicode
+            LibURL
             LibVideo
             LibXML
         )
         if (ENABLE_LAGOM_LIBWEB)
             list(APPEND TEST_DIRECTORIES LibWeb)
             list(APPEND TEST_DIRECTORIES LibWebView)
+        endif()
+        if (LINUX)
+            list(APPEND TEST_DIRECTORIES LibELF)
+        endif()
+        if (ENABLE_CLANG_PLUGINS AND CMAKE_CXX_COMPILER_ID MATCHES "Clang$")
+            list(APPEND TEST_DIRECTORIES ClangPlugins)
         endif()
 
         foreach (dir IN LISTS TEST_DIRECTORIES)

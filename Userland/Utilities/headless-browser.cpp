@@ -41,6 +41,7 @@
 #include <LibGfx/StandardCursor.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibIPC/File.h>
+#include <LibProtocol/RequestClient.h>
 #include <LibURL/URL.h>
 #include <LibWeb/Cookie/Cookie.h>
 #include <LibWeb/Cookie/ParsedCookie.h>
@@ -64,34 +65,42 @@ static StringView s_current_test_path;
 
 class HeadlessWebContentView final : public WebView::ViewImplementation {
 public:
-    static ErrorOr<NonnullOwnPtr<HeadlessWebContentView>> create(Core::AnonymousBuffer theme, Gfx::IntSize const& window_size, String const& command_line, StringView web_driver_ipc_path, Ladybird::IsLayoutTestMode is_layout_test_mode = Ladybird::IsLayoutTestMode::No, Vector<ByteString> const& certificates = {})
+    static ErrorOr<NonnullOwnPtr<HeadlessWebContentView>> create(Core::AnonymousBuffer theme, Gfx::IntSize const& window_size, String const& command_line, StringView web_driver_ipc_path, Ladybird::IsLayoutTestMode is_layout_test_mode = Ladybird::IsLayoutTestMode::No, Vector<ByteString> const& certificates = {}, StringView resources_folder = {})
     {
+        RefPtr<Protocol::RequestClient> request_client;
+
 #if defined(AK_OS_SERENITY)
         auto database = TRY(WebView::Database::create());
+        (void)resources_folder;
+        (void)certificates;
 #else
         auto sql_server_paths = TRY(get_paths_for_helper_process("SQLServer"sv));
-        auto database = TRY(WebView::Database::create(move(sql_server_paths)));
+        auto sql_client = TRY(launch_sql_server_process(sql_server_paths));
+        auto database = TRY(WebView::Database::create(move(sql_client)));
+
+        auto request_server_paths = TRY(get_paths_for_helper_process("RequestServer"sv));
+        request_client = TRY(launch_request_server_process(request_server_paths, resources_folder, certificates));
 #endif
 
         auto cookie_jar = TRY(WebView::CookieJar::create(*database));
 
-        auto view = TRY(adopt_nonnull_own_or_enomem(new (nothrow) HeadlessWebContentView(move(database), move(cookie_jar), certificates)));
+        auto view = TRY(adopt_nonnull_own_or_enomem(new (nothrow) HeadlessWebContentView(move(database), move(cookie_jar), request_client)));
 
 #if defined(AK_OS_SERENITY)
         view->m_client_state.client = TRY(WebView::WebContentClient::try_create(*view));
         (void)command_line;
-        (void)certificates;
         (void)is_layout_test_mode;
 #else
         Ladybird::WebContentOptions web_content_options {
             .command_line = command_line,
             .executable_path = MUST(String::from_byte_string(MUST(Core::System::current_executable_path()))),
-            .certificates = certificates,
             .is_layout_test_mode = is_layout_test_mode,
         };
 
+        auto request_server_socket = TRY(connect_new_request_server_client(*request_client));
+
         auto candidate_web_content_paths = TRY(get_paths_for_helper_process("WebContent"sv));
-        view->m_client_state.client = TRY(launch_web_content_process(*view, candidate_web_content_paths, web_content_options));
+        view->m_client_state.client = TRY(launch_web_content_process(*view, candidate_web_content_paths, web_content_options, move(request_server_socket)));
 #endif
 
         view->client().async_update_system_theme(0, move(theme));
@@ -155,10 +164,10 @@ public:
     }
 
 private:
-    HeadlessWebContentView(NonnullRefPtr<WebView::Database> database, WebView::CookieJar cookie_jar, Vector<ByteString> certificates)
+    HeadlessWebContentView(NonnullRefPtr<WebView::Database> database, NonnullOwnPtr<WebView::CookieJar> cookie_jar, RefPtr<Protocol::RequestClient> request_client = nullptr)
         : m_database(move(database))
         , m_cookie_jar(move(cookie_jar))
-        , m_certificates(move(certificates))
+        , m_request_client(move(request_client))
     {
         on_scroll_to_point = [this](auto position) {
             m_viewport_rect.set_location(position);
@@ -174,11 +183,11 @@ private:
         };
 
         on_get_cookie = [this](auto const& url, auto source) {
-            return m_cookie_jar.get_cookie(url, source);
+            return m_cookie_jar->get_cookie(url, source);
         };
 
         on_set_cookie = [this](auto const& url, auto const& cookie, auto source) {
-            m_cookie_jar.set_cookie(url, cookie, source);
+            m_cookie_jar->set_cookie(url, cookie, source);
         };
 
         on_request_worker_agent = [this]() {
@@ -186,9 +195,9 @@ private:
             auto worker_client = MUST(Web::HTML::WebWorkerClient::try_create());
             (void)this;
 #else
-            auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), m_certificates));
+            auto worker_client = MUST(launch_web_worker_process(MUST(get_paths_for_helper_process("WebWorker"sv)), *m_request_client));
 #endif
-            return worker_client->dup_sockets();
+            return worker_client->dup_socket();
         };
     }
 
@@ -204,8 +213,8 @@ private:
     RefPtr<Core::Promise<RefPtr<Gfx::Bitmap>>> m_pending_screenshot;
 
     NonnullRefPtr<WebView::Database> m_database;
-    WebView::CookieJar m_cookie_jar;
-    Vector<ByteString> m_certificates;
+    NonnullOwnPtr<WebView::CookieJar> m_cookie_jar;
+    RefPtr<Protocol::RequestClient> m_request_client;
 };
 
 static ErrorOr<NonnullRefPtr<Core::Timer>> load_page_for_screenshot_and_exit(Core::EventLoop& event_loop, HeadlessWebContentView& view, URL::URL url, int screenshot_timeout)
@@ -218,7 +227,7 @@ static ErrorOr<NonnullRefPtr<Core::Timer>> load_page_for_screenshot_and_exit(Cor
 
     outln("Taking screenshot after {} seconds", screenshot_timeout);
 
-    auto timer = TRY(Core::Timer::create_single_shot(
+    auto timer = Core::Timer::create_single_shot(
         screenshot_timeout * 1000,
         [&]() {
             if (auto screenshot = view.take_screenshot()) {
@@ -232,7 +241,7 @@ static ErrorOr<NonnullRefPtr<Core::Timer>> load_page_for_screenshot_and_exit(Cor
             }
 
             event_loop.quit(0);
-        }));
+        });
 
     view.load(url);
     timer->start();
@@ -272,10 +281,10 @@ static ErrorOr<TestResult> run_dump_test(HeadlessWebContentView& view, StringVie
     Core::EventLoop loop;
     bool did_timeout = false;
 
-    auto timeout_timer = TRY(Core::Timer::create_single_shot(timeout_in_milliseconds, [&] {
+    auto timeout_timer = Core::Timer::create_single_shot(timeout_in_milliseconds, [&] {
         did_timeout = true;
         loop.quit(0);
-    }));
+    });
 
     auto url = URL::create_with_file_scheme(TRY(FileSystem::real_path(input_path)));
 
@@ -373,10 +382,10 @@ static ErrorOr<TestResult> run_ref_test(HeadlessWebContentView& view, StringView
     Core::EventLoop loop;
     bool did_timeout = false;
 
-    auto timeout_timer = TRY(Core::Timer::create_single_shot(timeout_in_milliseconds, [&] {
+    auto timeout_timer = Core::Timer::create_single_shot(timeout_in_milliseconds, [&] {
         did_timeout = true;
         loop.quit(0);
-    }));
+    });
 
     RefPtr<Gfx::Bitmap> actual_screenshot, expectation_screenshot;
     view.on_load_finish = [&](auto const&) {
@@ -562,7 +571,7 @@ static ErrorOr<void> collect_ref_tests(Vector<Test>& tests, StringView path)
     return {};
 }
 
-static ErrorOr<int> run_tests(HeadlessWebContentView& view, StringView test_root_path, StringView test_glob, bool dump_failed_ref_tests)
+static ErrorOr<int> run_tests(HeadlessWebContentView& view, StringView test_root_path, StringView test_glob, bool dump_failed_ref_tests, bool dump_gc_graph)
 {
     view.clear_content_filters();
 
@@ -635,6 +644,15 @@ static ErrorOr<int> run_tests(HeadlessWebContentView& view, StringView test_root
         outln("{}: {}", test_result_to_string(*test.result), test.input_path);
     }
 
+    if (dump_gc_graph) {
+        auto path = view.dump_gc_graph();
+        if (path.is_error()) {
+            warnln("Failed to dump GC graph: {}", path.error());
+        } else {
+            outln("GC graph dumped to {}", path.value());
+        }
+    }
+
     if (timeout_count == 0 && fail_count == 0)
         return 0;
     return 1;
@@ -651,10 +669,16 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     bool dump_failed_ref_tests = false;
     bool dump_layout_tree = false;
     bool dump_text = false;
+    bool dump_gc_graph = false;
     bool is_layout_test_mode = false;
     StringView test_root_path;
     ByteString test_glob;
     Vector<ByteString> certificates;
+
+#if !defined(AK_OS_SERENITY)
+    platform_init();
+    resources_folder = s_serenity_resource_root;
+#endif
 
     Core::ArgsParser args_parser;
     args_parser.set_general_help("This utility runs the Browser in headless mode.");
@@ -664,9 +688,10 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
     args_parser.add_option(test_root_path, "Run tests in path", "run-tests", 'R', "test-root-path");
     args_parser.add_option(test_glob, "Only run tests matching the given glob", "filter", 'f', "glob");
     args_parser.add_option(dump_failed_ref_tests, "Dump screenshots of failing ref tests", "dump-failed-ref-tests", 'D');
+    args_parser.add_option(dump_gc_graph, "Dump GC graph", "dump-gc-graph", 'G');
     args_parser.add_option(resources_folder, "Path of the base resources folder (defaults to /res)", "resources", 'r', "resources-root-path");
     args_parser.add_option(web_driver_ipc_path, "Path to the WebDriver IPC socket", "webdriver-ipc-path", 0, "path");
-    args_parser.add_option(is_layout_test_mode, "Enable layout test mode", "layout-test-mode", 0);
+    args_parser.add_option(is_layout_test_mode, "Enable layout test mode", "layout-test-mode");
     args_parser.add_option(certificates, "Path to a certificate file", "certificate", 'C', "certificate");
     args_parser.add_positional_argument(raw_url, "URL to open", "url", Core::ArgsParser::Required::No);
     args_parser.parse(arguments);
@@ -690,11 +715,11 @@ ErrorOr<int> serenity_main(Main::Arguments arguments)
 
     StringBuilder command_line_builder;
     command_line_builder.join(' ', arguments.strings);
-    auto view = TRY(HeadlessWebContentView::create(move(theme), window_size, MUST(command_line_builder.to_string()), web_driver_ipc_path, is_layout_test_mode ? Ladybird::IsLayoutTestMode::Yes : Ladybird::IsLayoutTestMode::No, certificates));
+    auto view = TRY(HeadlessWebContentView::create(move(theme), window_size, MUST(command_line_builder.to_string()), web_driver_ipc_path, is_layout_test_mode ? Ladybird::IsLayoutTestMode::Yes : Ladybird::IsLayoutTestMode::No, certificates, resources_folder));
 
     if (!test_root_path.is_empty()) {
         test_glob = ByteString::formatted("*{}*", test_glob);
-        return run_tests(*view, test_root_path, test_glob, dump_failed_ref_tests);
+        return run_tests(*view, test_root_path, test_glob, dump_failed_ref_tests, dump_gc_graph);
     }
 
     auto url = WebView::sanitize_url(raw_url);

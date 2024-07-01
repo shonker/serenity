@@ -38,6 +38,7 @@ void WebContentClient::notify_process_information(WebView::ProcessHandle const& 
 {
     dbgln_if(SPAM_DEBUG, "handle: WebContentClient::NotifyProcessInformation! pid={}", handle.pid);
     ProcessManager::the().add_process(ProcessType::WebContent, handle.pid);
+    m_process_handle = handle;
 }
 
 void WebContentClient::did_paint(u64 page_id, Gfx::IntRect const& rect, i32 bitmap_id)
@@ -48,6 +49,9 @@ void WebContentClient::did_paint(u64 page_id, Gfx::IntRect const& rect, i32 bitm
 
 void WebContentClient::did_start_loading(u64 page_id, URL::URL const& url, bool is_redirect)
 {
+    if (auto* process = WebView::ProcessManager::the().find_process(m_process_handle.pid))
+        process->title.clear();
+
     if (auto view = view_for_page_id(page_id); view.has_value()) {
         view->set_url({}, url);
 
@@ -63,16 +67,6 @@ void WebContentClient::did_finish_loading(u64 page_id, URL::URL const& url)
 
         if (view->on_load_finish)
             view->on_load_finish(url);
-    }
-}
-
-void WebContentClient::did_update_url(u64 page_id, URL::URL const& url, Web::HTML::HistoryHandlingBehavior history_behavior)
-{
-    if (auto view = view_for_page_id(page_id); view.has_value()) {
-        view->set_url({}, url);
-
-        if (view->on_url_updated)
-            view->on_url_updated(url, history_behavior);
     }
 }
 
@@ -131,6 +125,9 @@ void WebContentClient::did_layout(u64 page_id, Gfx::IntSize content_size)
 
 void WebContentClient::did_change_title(u64 page_id, ByteString const& title)
 {
+    if (auto* process = WebView::ProcessManager::the().find_process(m_process_handle.pid))
+        process->title = MUST(String::from_byte_string(title));
+
     if (auto view = view_for_page_id(page_id); view.has_value()) {
         if (!view->on_title_change)
             return;
@@ -139,6 +136,16 @@ void WebContentClient::did_change_title(u64 page_id, ByteString const& title)
             view->on_title_change(view->url().to_byte_string());
         else
             view->on_title_change(title);
+    }
+}
+
+void WebContentClient::did_change_url(u64 page_id, URL::URL const& url)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value()) {
+        view->set_url({}, url);
+
+        if (view->on_url_change)
+            view->on_url_change(url);
     }
 }
 
@@ -588,6 +595,12 @@ void WebContentClient::did_change_audio_play_state(u64 page_id, Web::HTML::Audio
         view->did_change_audio_play_state({}, play_state);
 }
 
+void WebContentClient::did_update_navigation_buttons_state(u64 page_id, bool back_enabled, bool forward_enabled)
+{
+    if (auto view = view_for_page_id(page_id); view.has_value())
+        view->did_update_navigation_buttons_state({}, back_enabled, forward_enabled);
+}
+
 void WebContentClient::inspector_did_load(u64 page_id)
 {
     if (auto view = view_for_page_id(page_id); view.has_value()) {
@@ -659,7 +672,7 @@ Messages::WebContentClient::RequestWorkerAgentResponse WebContentClient::request
             return view->on_request_worker_agent();
     }
 
-    return WebView::SocketPair { -1, -1 };
+    return IPC::File {};
 }
 
 Optional<ViewImplementation&> WebContentClient::view_for_page_id(u64 page_id, SourceLocation location)

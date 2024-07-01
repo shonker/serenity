@@ -97,19 +97,19 @@ void IPv4Socket::get_peer_address(sockaddr* address, socklen_t* address_size)
 
 ErrorOr<void> IPv4Socket::ensure_bound()
 {
-    dbgln_if(IPV4_SOCKET_DEBUG, "IPv4Socket::ensure_bound() m_bound {}", m_bound);
-    if (m_bound)
+    dbgln_if(IPV4_SOCKET_DEBUG, "IPv4Socket::ensure_bound() m_bound {}", m_bound.was_set());
+    if (m_bound.was_set())
         return {};
 
     auto result = protocol_bind();
     if (!result.is_error())
-        m_bound = true;
+        m_bound.set();
     return result;
 }
 
 ErrorOr<void> IPv4Socket::bind(Credentials const& credentials, Userspace<sockaddr const*> user_address, socklen_t address_size)
 {
-    if (m_bound)
+    if (m_bound.was_set())
         return set_so_error(EINVAL);
 
     VERIFY(setup_state() == SetupState::Unstarted);
@@ -624,7 +624,7 @@ ErrorOr<void> IPv4Socket::ioctl(OpenFileDescription&, unsigned request, Userspac
         rtentry route;
         TRY(copy_from_user(&route, user_route));
 
-        Userspace<const char*> user_rt_dev((FlatPtr)route.rt_dev);
+        Userspace<char const*> user_rt_dev((FlatPtr)route.rt_dev);
         auto ifname = TRY(Process::get_syscall_name_string_fixed_buffer<IFNAMSIZ>(user_rt_dev));
         auto adapter = NetworkingManagement::the().lookup_by_name(ifname.representable_view());
         if (!adapter)

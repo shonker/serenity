@@ -61,6 +61,7 @@ private:
     virtual Messages::WebDriverClient::MaximizeWindowResponse maximize_window() override;
     virtual Messages::WebDriverClient::MinimizeWindowResponse minimize_window() override;
     virtual Messages::WebDriverClient::FullscreenWindowResponse fullscreen_window() override;
+    virtual Messages::WebDriverClient::ConsumeUserActivationResponse consume_user_activation() override;
     virtual Messages::WebDriverClient::FindElementResponse find_element(JsonValue const& payload) override;
     virtual Messages::WebDriverClient::FindElementsResponse find_elements(JsonValue const& payload) override;
     virtual Messages::WebDriverClient::FindElementFromElementResponse find_element_from_element(JsonValue const& payload, String const& element_id) override;
@@ -117,7 +118,7 @@ private:
     ErrorOr<ScriptArguments, Web::WebDriver::Error> extract_the_script_arguments_from_a_request(JsonValue const& payload);
     void delete_cookies(Optional<StringView> const& name = {});
 
-    Web::PageClient& m_page_client;
+    JS::NonnullGCPtr<Web::PageClient> m_page_client;
 
     // https://w3c.github.io/webdriver/#dfn-page-load-strategy
     Web::WebDriver::PageLoadStrategy m_page_load_strategy { Web::WebDriver::PageLoadStrategy::Normal };

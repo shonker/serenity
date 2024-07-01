@@ -169,10 +169,10 @@ struct PaintTextShadow {
 struct FillRectWithRoundedCorners {
     Gfx::IntRect rect;
     Color color;
-    Gfx::AntiAliasingPainter::CornerRadius top_left_radius;
-    Gfx::AntiAliasingPainter::CornerRadius top_right_radius;
-    Gfx::AntiAliasingPainter::CornerRadius bottom_left_radius;
-    Gfx::AntiAliasingPainter::CornerRadius bottom_right_radius;
+    Gfx::CornerRadius top_left_radius;
+    Gfx::CornerRadius top_right_radius;
+    Gfx::CornerRadius bottom_left_radius;
+    Gfx::CornerRadius bottom_right_radius;
     Vector<Gfx::Path> clip_paths;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
@@ -261,7 +261,6 @@ struct DrawEllipse {
 struct FillEllipse {
     Gfx::IntRect rect;
     Color color;
-    Gfx::AntiAliasingPainter::BlendMode blend_mode;
 
     [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
 
@@ -298,16 +297,6 @@ struct DrawSignedDistanceField {
     {
         rect.translate_by(offset);
     }
-};
-
-struct PaintFrame {
-    Gfx::IntRect rect;
-    Palette palette;
-    Gfx::FrameStyle style;
-
-    [[nodiscard]] Gfx::IntRect bounding_rect() const { return rect; }
-
-    void translate_by(Gfx::IntPoint const& offset) { rect.translate_by(offset); }
 };
 
 struct ApplyBackdropFilter {
@@ -390,19 +379,6 @@ struct BlitCornerClipping {
     void translate_by(Gfx::IntPoint const& offset) { border_rect.translate_by(offset); }
 };
 
-struct PaintBorders {
-    DevicePixelRect border_rect;
-    CornerRadii corner_radii;
-    BordersDataDevicePixels borders_data;
-
-    [[nodiscard]] Gfx::IntRect bounding_rect() const { return border_rect.to_type<int>(); }
-
-    void translate_by(Gfx::IntPoint const& offset)
-    {
-        border_rect.translate_by(offset.to_type<DevicePixels>());
-    }
-};
-
 using Command = Variant<
     DrawGlyphRun,
     DrawText,
@@ -428,12 +404,10 @@ using Command = Variant<
     FillEllipse,
     DrawLine,
     DrawSignedDistanceField,
-    PaintFrame,
     ApplyBackdropFilter,
     DrawRect,
     DrawTriangleWave,
     SampleUnderCorners,
-    BlitCornerClipping,
-    PaintBorders>;
+    BlitCornerClipping>;
 
 }

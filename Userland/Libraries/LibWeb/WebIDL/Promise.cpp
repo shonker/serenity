@@ -176,6 +176,7 @@ void mark_promise_as_handled(Promise const& promise)
 
 struct WaitForAllResults : JS::Cell {
     JS_CELL(WaitForAllResults, JS::Cell);
+    JS_DECLARE_ALLOCATOR(WaitForAllResults);
 
     WaitForAllResults(JS::NonnullGCPtr<JS::HeapFunction<void(Vector<JS::Value> const&)>> s, size_t t)
         : success_steps(s)
@@ -191,9 +192,7 @@ struct WaitForAllResults : JS::Cell {
     {
         Base::visit_edges(visitor);
         visitor.visit(success_steps);
-        for (auto& value : result) {
-            visitor.visit(value);
-        }
+        visitor.visit(result);
     }
 
     JS::NonnullGCPtr<JS::HeapFunction<void(Vector<JS::Value> const&)>> success_steps;
@@ -201,6 +200,8 @@ struct WaitForAllResults : JS::Cell {
     size_t total = 0;
     size_t fulfilled_count = 0;
 };
+
+JS_DEFINE_ALLOCATOR(WaitForAllResults);
 
 // https://webidl.spec.whatwg.org/#wait-for-all
 void wait_for_all(JS::Realm& realm, Vector<JS::NonnullGCPtr<Promise>> const& promises, Function<void(Vector<JS::Value> const&)> success_steps, Function<void(JS::Value)> failure_steps)
@@ -236,9 +237,9 @@ void wait_for_all(JS::Realm& realm, Vector<JS::NonnullGCPtr<Promise>> const& pro
     // 6. If total is 0, then:
     if (total == 0) {
         // 1. Queue a microtask to perform successSteps given « ».
-        HTML::queue_a_microtask(nullptr, [success_steps = JS::create_heap_function(realm.heap(), move(success_steps))] {
+        HTML::queue_a_microtask(nullptr, JS::create_heap_function(realm.heap(), [success_steps = JS::create_heap_function(realm.heap(), move(success_steps))] {
             success_steps->function()({});
-        });
+        }));
 
         // 2. Return.
         return;
